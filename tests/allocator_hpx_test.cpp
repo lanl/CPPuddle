@@ -20,9 +20,9 @@
 int hpx_main(int argc, char *argv[]) {
 
   constexpr size_t max_number_futures = 1024;
-  size_t number_futures = 64;
-  size_t array_size = 500000;
-  size_t passes = 200;
+  size_t number_futures = 32;
+  size_t array_size = 1000000;
+  size_t passes = 100;
   std::string filename{};
 
   try {
@@ -30,14 +30,14 @@ int hpx_main(int argc, char *argv[]) {
     desc.add_options()("help", "Help screen")(
         "arraysize",
         boost::program_options::value<size_t>(&array_size)
-            ->default_value(5000000),
+            ->default_value(1000000),
         "Size of the buffers")(
         "futures",
         boost::program_options::value<size_t>(&number_futures)
-            ->default_value(64),
+            ->default_value(32),
         "Sets the number of futures to be (potentially) executed in parallel")(
         "passes",
-        boost::program_options::value<size_t>(&passes)->default_value(200),
+        boost::program_options::value<size_t>(&passes)->default_value(100),
         "Sets the number of repetitions")(
         "outputfile",
         boost::program_options::value<std::string>(&filename)->default_value(
@@ -90,6 +90,8 @@ int hpx_main(int argc, char *argv[]) {
         for (size_t i = 0; i < number_futures; i++) {
           futs[i] = futs[i].then([&](hpx::shared_future<void> &&predecessor) {
             std::vector<double> test6(array_size, double{});
+            // Print last element - Causes the compiler to not optimize out the entire loop
+            std::cout << test6[array_size - 1] << "";
           });
         }
       }
@@ -99,21 +101,34 @@ int hpx_main(int argc, char *argv[]) {
       default_duration =
           std::chrono::duration_cast<std::chrono::milliseconds>(end - begin)
               .count();
-      std::cout << "\n==> Non-recycle allocation test took " << default_duration
-                << "ms" << std::endl;
+    }
+    std::cout << std::endl << std::endl;
+
+    // ensure that at least 4 buffers have to created for unit testing
+    {
+      std::vector<double, cppuddle::memory_recycling::recycle_std<double>> buffer1(
+          array_size, double{});
+      std::vector<double, cppuddle::memory_recycling::recycle_std<double>> buffer2(
+          array_size, double{});
+      std::vector<double, cppuddle::memory_recycling::recycle_std<double>> buffer3(
+          array_size, double{});
+      std::vector<double, cppuddle::memory_recycling::recycle_std<double>> buffer4(
+          array_size, double{});
     }
 
     {
-      auto begin = std::chrono::high_resolution_clock::now();
       std::vector<hpx::shared_future<void>> futs(max_number_futures);
       for (size_t i = 0; i < max_number_futures; i++) {
         futs[i] = hpx::make_ready_future<void>();
       }
+      auto begin = std::chrono::high_resolution_clock::now();
       for (size_t pass = 0; pass < passes; pass++) {
         for (size_t i = 0; i < number_futures; i++) {
           futs[i] = futs[i].then([&](hpx::shared_future<void> &&predecessor) {
             std::vector<double, cppuddle::memory_recycling::recycle_std<double>>
               test6(array_size, double{});
+            // Print last element - Causes the compiler to not optimize out the entire loop
+            std::cout << test6[array_size - 1] << "";
           });
         }
       }
@@ -123,12 +138,11 @@ int hpx_main(int argc, char *argv[]) {
       recycle_duration =
           std::chrono::duration_cast<std::chrono::milliseconds>(end - begin)
               .count();
-      std::cout << "\n==> Recycle allocation test took " << recycle_duration
-                << "ms" << std::endl;
     }
     cppuddle::memory_recycling::print_buffer_counters();
     cppuddle::memory_recycling::force_buffer_cleanup(); // Cleanup all buffers and the managers for better
                                // comparison
+    std::cout << std::endl << std::endl;
 
 
     // ensure that at least 4 buffers have to created for unit testing
@@ -145,11 +159,11 @@ int hpx_main(int argc, char *argv[]) {
 
     // Aggressive recycle Test:
     {
-      auto begin = std::chrono::high_resolution_clock::now();
       std::vector<hpx::shared_future<void>> futs(max_number_futures);
       for (size_t i = 0; i < max_number_futures; i++) {
         futs[i] = hpx::make_ready_future<void>();
       }
+      auto begin = std::chrono::high_resolution_clock::now();
       for (size_t pass = 0; pass < passes; pass++) {
         for (size_t i = 0; i < number_futures; i++) {
           futs[i] = futs[i].then([&](hpx::shared_future<void> &&predecessor) {
@@ -157,6 +171,8 @@ int hpx_main(int argc, char *argv[]) {
                 double,
                 cppuddle::memory_recycling::aggressive_recycle_std<double>>
                 test6(array_size, double{});
+            // Print last element - Causes the compiler to not optimize out the entire loop
+            std::cout << test6[array_size - 1] << "";
           });
         }
       }
@@ -166,14 +182,26 @@ int hpx_main(int argc, char *argv[]) {
       aggressive_duration =
           std::chrono::duration_cast<std::chrono::milliseconds>(end - begin)
               .count();
-      std::cout << "\n==> Aggressive recycle allocation test took "
-                << aggressive_duration << "ms" << std::endl;
     }
     cppuddle::memory_recycling::print_buffer_counters();
     cppuddle::memory_recycling::force_buffer_cleanup(); // Cleanup all buffers and the managers for better
                                // comparison
+    std::cout << std::endl << "Runtime Results:" << std::endl
+                           << "================" << std::endl;
 
+    std::cout << "\n==> Non-recycle allocation test took " << default_duration
+              << "ms" << std::endl;
+    std::cout << "==> Recycle allocation test took " << recycle_duration
+              << "ms" << std::endl;
+    std::cout << "==> Aggressive recycle allocation test took "
+              << aggressive_duration << "ms" << std::endl;
 
+    std::cout << std::endl;
+    if (recycle_duration < default_duration) {
+      std::cout << "Test information: Normal recycler was faster than default "
+                   "allocator!"
+                << std::endl;
+    }
     if (aggressive_duration < recycle_duration) {
       std::cout << "Test information: Aggressive recycler was faster than normal "
                    "recycler!"
