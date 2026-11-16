@@ -21,6 +21,8 @@
 #include "gemm_cpu_utils.hpp"
 #include "cuda_gemm_kernels.hpp"
 
+#include "cppuddle/executor_recycling/executor_pools_interface.hpp""
+
 // ------------------------------------------------------------
 // Computes:
 //   C = alpha * A * B + beta * C
@@ -58,26 +60,31 @@ inline constexpr bool is_void_or_future_void_v =
 template <typename R,
           typename = std::enable_if_t<is_void_or_future_void_v<R>>>
 R kernel_fusion_benchmark_iteration(const size_t utilized_implementation_id,
-    const double alpha, const double beta, const std::vector<double> &hA, const std::vector<double> &hB,
+    double alpha, double beta, std::vector<double> &hA, std::vector<double> &hB,
     std::vector<double> &hC, double *dA, double *dB, double *dC, const std::vector<double> &hC_comparison,
-    const size_t M, const size_t N, const size_t K, cublasHandle_t &handle, const graph_mode utilized_graph_mode,
+    size_t M, size_t N, size_t K, cublasHandle_t &handle, const graph_mode utilized_graph_mode,
     const size_t extra_graph_parameter, const bool postprocessing_active) {
 
   // auto policy = hpx::launch::async_policy(hpx::threads::thread_priority::default_, 
   //                           hpx::threads::thread_stacksize::large);
 
   using result_t = std::conditional_t<std::is_void_v<R>, empty_t, R>;
-  result_t ret_fut; 
+  result_t ret_fut;
   if constexpr (!std::is_void_v<R>)
     ret_fut = hpx::make_ready_future<void>();
 
-  // if graph == parallel
-  // Launch one other kernel recursively for <number_kernels>
-  // return when-all future
   // if (utilized_graph_mode == graph_mode::parallel) {
   //   if (extra_graph_parameter > 1) {
-  //     ret_fut = hpx::async(policy, &kernel_fusion_benchmark_iteration, utilized_implementation_id, alpha, beta, hA, hB, std::ref(hC),
+  //     if constexpr (!std::is_void_v<R>) {
+  //       ret_fut = ret_fut.then(
+  //           [=, &handle, &hA, &hB, &hC, &hC_comparison](auto && fut) {
+  //         kernel_fusion_benchmark_iteration<R>(utilized_implementation_id, alpha, beta, hA, hB, std::ref(hC),
   //         dA, dB, dC, hC_comparison, M, N, K, std::ref(handle), utilized_graph_mode, extra_graph_parameter - 1, postprocessing_active);
+  //           });
+  //     } else {
+  //        kernel_fusion_benchmark_iteration<R>(utilized_implementation_id, alpha, beta, hA, hB, std::ref(hC),
+  //            dA, dB, dC, hC_comparison, M, N, K, std::ref(handle), utilized_graph_mode, extra_graph_parameter - 1, postprocessing_active);
+  //     }
   //   }
   // }
 
@@ -94,6 +101,12 @@ R kernel_fusion_benchmark_iteration(const size_t utilized_implementation_id,
   //   }
   // }
 
+  result_t kernel_fut;
+  if constexpr (!std::is_void_v<R>)
+    kernel_fut = hpx::make_ready_future<void>();
+  cppuddle::executor_recycling::executor_interface<hpx::cuda::experimental::cuda_executor,
+    cppuddle::executor_recycling::round_robin_pool_impl<
+      hpx::cuda::experimental::cuda_executor>> exec{0};
   if (utilized_implementation_id == 0) {
     dim3 block(16, 16);
     dim3 grid(
@@ -104,8 +117,14 @@ R kernel_fusion_benchmark_iteration(const size_t utilized_implementation_id,
       reset_C_gpu(M, N, dC);
     // start_timer = std::chrono::high_resolution_clock::now();
     // preprocessing?
-    dgemm_naive_unoptimized_v0<<<grid, block>>>(
-      M, N, K, alpha, dA, dB, beta, dC);
+    if constexpr (!std::is_void_v<R>) {
+      void *args[] = {&M, &N, &K, &alpha, &dA, &dB, &beta, &dC};
+      kernel_fut = hpx::async(static_cast<hpx::cuda::experimental::cuda_executor>(exec),
+          cudaLaunchKernel<decltype(dgemm_naive_unoptimized_v0)>, dgemm_naive_unoptimized_v0,  grid, block, args, 0);
+    } else {
+       dgemm_naive_unoptimized_v0<<<grid, block>>>(
+          M, N, K, alpha, dA, dB, beta, dC);
+    }
     // postprocessing
     if (postprocessing_active && !check_gpu_results(M, N, dC, hC_comparison.data())) 
       std::cout << "-> ERROR: Variant 0 faulty!" << std::endl;
@@ -117,8 +136,15 @@ R kernel_fusion_benchmark_iteration(const size_t utilized_implementation_id,
     );
     if (postprocessing_active)
       reset_C_gpu(M, N, dC);
-    dgemm_naive_v1<<<grid, block>>>(
-      M, N, K, alpha, dA, dB, beta, dC);
+
+    if constexpr (!std::is_void_v<R>) {
+      void *args[] = {&M, &N, &K, &alpha, &dA, &dB, &beta, &dC};
+      kernel_fut = hpx::async(static_cast<hpx::cuda::experimental::cuda_executor>(exec),
+          cudaLaunchKernel<decltype(dgemm_naive_v1)>, dgemm_naive_v1, grid, block, args, 0);
+    } else {
+       dgemm_naive_v1<<<grid, block>>>(
+          M, N, K, alpha, dA, dB, beta, dC);
+    }
     if (postprocessing_active && !check_gpu_results(M, N, dC, hC_comparison.data())) 
       std::cout << "-> ERROR: Variant 1 faulty!" << std::endl;
   } else if (utilized_implementation_id == 2) {
@@ -130,8 +156,14 @@ R kernel_fusion_benchmark_iteration(const size_t utilized_implementation_id,
     );
     if (postprocessing_active)
       reset_C_gpu(M, N, dC);
-    dgemm_shared_tiled_v2<TILE><<<grid, block>>>(
-      M, N, K, alpha, dA, dB, beta, dC);
+    if constexpr (!std::is_void_v<R>) {
+      void *args[] = {&M, &N, &K, &alpha, &dA, &dB, &beta, &dC};
+      kernel_fut = hpx::async(static_cast<hpx::cuda::experimental::cuda_executor>(exec),
+          cudaLaunchKernel<decltype(dgemm_shared_tiled_v2<TILE>)>, dgemm_shared_tiled_v2<TILE>, grid, block, args, 0);
+    } else {
+      dgemm_shared_tiled_v2<TILE><<<grid, block>>>(
+        M, N, K, alpha, dA, dB, beta, dC);
+    }
     if (postprocessing_active && !check_gpu_results(M, N, dC, hC_comparison.data())) 
       std::cout << "-> ERROR: Variant 2 faulty!" << std::endl;
   } else if (utilized_implementation_id == 3) {
@@ -142,8 +174,14 @@ R kernel_fusion_benchmark_iteration(const size_t utilized_implementation_id,
     dim3 grid((N + BN - 1) / BN, (M + BM - 1) / BM);
     if (postprocessing_active)
       reset_C_gpu(M, N, dC);
-    dgemm_register_tiled_v3<BM, BN, BK, TM, TN><<<grid, block>>>(
-      M, N, K, alpha, dA, dB, beta, dC);
+    if constexpr (!std::is_void_v<R>) {
+      void *args[] = {&M, &N, &K, &alpha, &dA, &dB, &beta, &dC};
+      kernel_fut = hpx::async(static_cast<hpx::cuda::experimental::cuda_executor>(exec),
+          cudaLaunchKernel<decltype(dgemm_register_tiled_v3<BM, BN, BK, TM, TN>)>, dgemm_register_tiled_v3<BM, BN, BK, TM, TN>, grid, block, args, 0);
+    } else {
+      dgemm_register_tiled_v3<BM, BN, BK, TM, TN><<<grid, block>>>(
+        M, N, K, alpha, dA, dB, beta, dC);
+    }
     if (postprocessing_active && !check_gpu_results(M, N, dC, hC_comparison.data())) 
       std::cout << "-> ERROR: Variant 3 faulty!" << std::endl;
   } else if (utilized_implementation_id == 4) {
@@ -155,9 +193,15 @@ R kernel_fusion_benchmark_iteration(const size_t utilized_implementation_id,
     );
     if (postprocessing_active)
       reset_C_gpu(M, N, dC);
-    dgemm_v4_shared_register_tiled<BM, BN, BK, TM, TN>
-      <<<grid, block>>>(
-        M, N, K, alpha, dA, dB, beta, dC);
+    if constexpr (!std::is_void_v<R>) {
+      void *args[] = {&M, &N, &K, &alpha, &dA, &dB, &beta, &dC};
+      kernel_fut = hpx::async(static_cast<hpx::cuda::experimental::cuda_executor>(exec),
+          cudaLaunchKernel<decltype(dgemm_v4_shared_register_tiled<BM, BN, BK, TM, TN>)>, dgemm_v4_shared_register_tiled<BM, BN, BK, TM, TN>, grid, block, args, 0);
+    } else {
+      dgemm_v4_shared_register_tiled<BM, BN, BK, TM, TN>
+        <<<grid, block>>>(
+          M, N, K, alpha, dA, dB, beta, dC);
+    }
     if (postprocessing_active && !check_gpu_results(M, N, dC, hC_comparison.data())) 
       std::cout << "-> ERROR: Variant 4 faulty!" << std::endl;
   } else if (utilized_implementation_id == 5) {
@@ -166,9 +210,15 @@ R kernel_fusion_benchmark_iteration(const size_t utilized_implementation_id,
     dim3 grid((N + BN - 1) / BN, (M + BM - 1) / BM);
     if (postprocessing_active)
       reset_C_gpu(M, N, dC);
-    dgemm_v5_vectorized_register_tiled<BM, BN, BK, TM, TN>
-      <<<grid, block>>>(
-      M, N, K, alpha, dA, dB, beta, dC);
+    if constexpr (!std::is_void_v<R>) {
+      void *args[] = {&M, &N, &K, &alpha, &dA, &dB, &beta, &dC};
+      kernel_fut = hpx::async(static_cast<hpx::cuda::experimental::cuda_executor>(exec),
+          cudaLaunchKernel<decltype(dgemm_v5_vectorized_register_tiled<BM, BN, BK, TM, TN>)>, dgemm_v5_vectorized_register_tiled<BM, BN, BK, TM, TN>, grid, block, args, 0);
+    } else {
+      dgemm_v5_vectorized_register_tiled<BM, BN, BK, TM, TN>
+        <<<grid, block>>>(
+        M, N, K, alpha, dA, dB, beta, dC);
+    }
     if (postprocessing_active && !check_gpu_results(M, N, dC, hC_comparison.data())) 
       std::cout << "-> ERROR: Variant 5 faulty!" << std::endl;
   } else if (utilized_implementation_id == 6) {
@@ -183,8 +233,14 @@ R kernel_fusion_benchmark_iteration(const size_t utilized_implementation_id,
     dim3 grid(N / BN, M / BM);
     if (postprocessing_active)
       reset_C_gpu(M, N, dC);
-    dgemm_v6_fp64_wmma_tiled<<<grid,  block>>>(
-      M, N, K, alpha, dA, dB, beta, dC);
+    if constexpr (!std::is_void_v<R>) {
+      void *args[] = {&M, &N, &K, &alpha, &dA, &dB, &beta, &dC};
+      kernel_fut = hpx::async(static_cast<hpx::cuda::experimental::cuda_executor>(exec),
+          cudaLaunchKernel<decltype(dgemm_v6_fp64_wmma_tiled<BM, BN, BK>)>, dgemm_v6_fp64_wmma_tiled<BM, BN, BK>, grid, block, args, 0);
+    } else {
+      dgemm_v6_fp64_wmma_tiled<BM, BN, BK><<<grid,  block>>>(
+        M, N, K, alpha, dA, dB, beta, dC);
+    }
     if (postprocessing_active && !check_gpu_results(M, N, dC, hC_comparison.data())) 
       std::cout << "-> ERROR: Variant 6 faulty!" << std::endl;
   } else if (utilized_implementation_id == 7) {
@@ -199,13 +255,20 @@ R kernel_fusion_benchmark_iteration(const size_t utilized_implementation_id,
     dim3 grid(N / BN, M / BM);
     if (postprocessing_active)
       reset_C_gpu(M, N, dC);
-    dgemm_v7_fp64_wmma_64x64_8warps<BM, BN, BK>
-      <<<grid, block>>>(M, N, K, alpha, dA, dB, beta, dC);
+    if constexpr (!std::is_void_v<R>) {
+      void *args[] = {&M, &N, &K, &alpha, &dA, &dB, &beta, &dC};
+      kernel_fut = hpx::async(static_cast<hpx::cuda::experimental::cuda_executor>(exec),
+          cudaLaunchKernel<decltype(dgemm_v7_fp64_wmma_64x64_8warps<BM, BN, BK>)>, dgemm_v7_fp64_wmma_64x64_8warps<BM, BN, BK>, grid, block, args, 0);
+    } else {
+      dgemm_v7_fp64_wmma_64x64_8warps<BM, BN, BK>
+        <<<grid, block>>>(M, N, K, alpha, dA, dB, beta, dC);
+    }
     if (postprocessing_active && !check_gpu_results(M, N, dC, hC_comparison.data())) 
       std::cout << "-> ERROR: Variant 7 faulty!" << std::endl;
   } else if (utilized_implementation_id == 8) {  // CUBLAS version
     if (postprocessing_active)
       reset_C_gpu(M, N, dC);
+    hpx::post(static_cast<hpx::cuda::experimental::cuda_executor>(exec), cublasSetStream, handle);
     cublasDgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N, N, M, K, &alpha, dB, N, dA, K, &beta, dC, N);
     if (postprocessing_active && !check_gpu_results(M, N, dC, hC_comparison.data())) 
       std::cout << "-> ERROR: Variant CUBLAS faulty!" << std::endl;
@@ -221,7 +284,7 @@ R kernel_fusion_benchmark_iteration(const size_t utilized_implementation_id,
     if (extra_graph_parameter > 1) {
       
       if constexpr (!std::is_void_v<R>) {
-        ret_fut = ret_fut.then(
+        ret_fut = kernel_fut.then(
             [=, &handle, &hA, &hB, &hC, &hC_comparison](auto && fut) {
           kernel_fusion_benchmark_iteration<R>(utilized_implementation_id, alpha, beta, hA, hB, std::ref(hC),
           dA, dB, dC, hC_comparison, M, N, K, std::ref(handle), utilized_graph_mode, extra_graph_parameter - 1, postprocessing_active);
@@ -247,7 +310,7 @@ R kernel_fusion_benchmark_iteration(const size_t utilized_implementation_id,
 }
 
 void kernel_fusion_benchmark(const experiment_setup &experiment_parameters,
-    const std::vector<double> &hA, const std::vector<double> &hB,
+    std::vector<double> &hA, std::vector<double> &hB,
     std::vector<double> &hC, const std::vector<double> &hC_comparison,
     const size_t M, const size_t N, const size_t K) {
 
@@ -482,13 +545,19 @@ int hpx_main(int argc, char *argv[]) {
   experiment_parameters.utilized_futurization_mode = futurization_mode::then;
 
 
+  hpx::cuda::experimental::detail::register_polling(hpx::resource::get_thread_pool(0));
+  cppuddle::executor_recycling::executor_pool::init_executor_pool<hpx::cuda::experimental::cuda_executor,
+    cppuddle::executor_recycling::round_robin_pool_impl<
+      hpx::cuda::experimental::cuda_executor>>(0, 128, 0, true);
+
   // ============================================================
   // CPU Comparison variant (datA)
   // ============================================================
-  std::cout << "Variant Benchmark CPU: \n";
-  experiment_parameters.utilized_implementation_id = 9;
-  kernel_fusion_benchmark(experiment_parameters, hA, hB, hC, hC_comparison, N, M, K);
-  std::cout << "Variant Benchmark CPU end \n" << std::endl;
+  // std::cout << "Variant Benchmark CPU: \n";
+  // experiment_parameters.utilized_implementation_id = 9;
+  // kernel_fusion_benchmark(experiment_parameters, hA, hB, hC, hC_comparison, N, M, K);
+  // std::cout << "Variant Benchmark CPU end \n" << std::endl;
+
   // std::cout << "Variant CPU: Naive \n";
 
   // auto start_cpu = std::chrono::high_resolution_clock::now();
@@ -667,7 +736,7 @@ int hpx_main(int argc, char *argv[]) {
   // Variant 4 launch configuration
   // ============================================================
   std::cout << "Variant Benchmark 4: \n";
-  std::cout << "-> Description: Shared register tiled with better ccnfig\n";
+  std::cout << "-> Description: Shared register tiled with better config\n";
   experiment_parameters.utilized_implementation_id = 4;
   kernel_fusion_benchmark(experiment_parameters, hA, hB, hC, hC_comparison, N, M, K);
   std::cout << "Variant Benchmark 4 end \n" << std::endl;
@@ -899,6 +968,8 @@ int hpx_main(int argc, char *argv[]) {
   cudaFree(dB);
   cudaFree(dC);
 
+  hpx::cuda::experimental::detail::unregister_polling(
+      hpx::resource::get_thread_pool(0));
   return hpx::finalize();
 }
 
