@@ -126,7 +126,7 @@ R kernel_fusion_benchmark_iteration(const size_t utilized_implementation_id,
           if(!check_gpu_results(M, N, dC, hC_comparison.data(), underlying_exec)) {
                   std::cout << "-> ERROR: Variant 0 faulty!" << std::endl;
           } else {
-                  std::cout << " =TEST SUCCESS= ";
+                  std::cout << " =TEST_0 SUCCESS= ";
           }
         });
       }
@@ -145,14 +145,24 @@ R kernel_fusion_benchmark_iteration(const size_t utilized_implementation_id,
         (N + block.x - 1) / block.x,
         (M + block.y - 1) / block.y
     );
-    if (postprocessing_active)
-      reset_C_gpu(M, N, dC);
-
     if constexpr (!std::is_void_v<R>) {
+      if (postprocessing_active)
+        reset_C_gpu(M, N, dC, exec);
       void *args[] = {&M, &N, &K, &alpha, &dA, &dB, &beta, &dC};
       kernel_fut = hpx::async(static_cast<hpx::cuda::experimental::cuda_executor>(exec),
           cudaLaunchKernel<decltype(dgemm_naive_v1)>, dgemm_naive_v1, grid, block, args, 0);
+      if (postprocessing_active) {
+        kernel_fut = kernel_fut.then([extra_graph_parameter, M, N, &dC, &hC_comparison, underlying_exec](auto && fut) {
+          if(!check_gpu_results(M, N, dC, hC_comparison.data(), underlying_exec)) {
+                  std::cout << "-> ERROR: Variant 1 faulty!" << std::endl;
+          } else {
+                  std::cout << " =TEST_1 SUCCESS= ";
+          }
+        });
+      }
     } else {
+      if (postprocessing_active)
+        reset_C_gpu(M, N, dC);
       dgemm_naive_v1<<<grid, block>>>(
           M, N, K, alpha, dA, dB, beta, dC);
       if (postprocessing_active && !check_gpu_results(M, N, dC, hC_comparison.data())) 
@@ -165,13 +175,24 @@ R kernel_fusion_benchmark_iteration(const size_t utilized_implementation_id,
       (N + TILE - 1) / TILE,
       (M + TILE - 1) / TILE
     );
-    if (postprocessing_active)
-      reset_C_gpu(M, N, dC);
     if constexpr (!std::is_void_v<R>) {
+      if (postprocessing_active)
+        reset_C_gpu(M, N, dC, exec);
       void *args[] = {&M, &N, &K, &alpha, &dA, &dB, &beta, &dC};
       kernel_fut = hpx::async(static_cast<hpx::cuda::experimental::cuda_executor>(exec),
           cudaLaunchKernel<decltype(dgemm_shared_tiled_v2<TILE>)>, dgemm_shared_tiled_v2<TILE>, grid, block, args, 0);
+      if (postprocessing_active) {
+        kernel_fut = kernel_fut.then([extra_graph_parameter, M, N, &dC, &hC_comparison, underlying_exec](auto && fut) {
+          if(!check_gpu_results(M, N, dC, hC_comparison.data(), underlying_exec)) {
+                  std::cout << "-> ERROR: Variant 2 faulty!" << std::endl;
+          } else {
+                  std::cout << " =TEST_2 SUCCESS= ";
+          }
+        });
+      }
     } else {
+      if (postprocessing_active)
+        reset_C_gpu(M, N, dC);
       dgemm_shared_tiled_v2<TILE><<<grid, block>>>(
         M, N, K, alpha, dA, dB, beta, dC);
       if (postprocessing_active && !check_gpu_results(M, N, dC, hC_comparison.data())) 
@@ -601,20 +622,20 @@ int hpx_main(int argc, char *argv[]) {
   // // ============================================================
   // // Variant 1 launch configuration
   // // ============================================================
-  // std::cout << "Variant Benchmark 1: \n";
-  // std::cout << "-> Description: Naive but with optimized access pattern\n";
-  // experiment_parameters.utilized_implementation_id = 1;
-  // kernel_fusion_benchmark(experiment_parameters, hA, hB, hC, hC_comparison, N, M, K);
-  // std::cout << "Variant Benchmark 1 \n" << std::endl;
+  std::cout << "Variant Benchmark 1: \n";
+  std::cout << "-> Description: Naive but with optimized access pattern\n";
+  experiment_parameters.utilized_implementation_id = 1;
+  kernel_fusion_benchmark(experiment_parameters, hA, hB, hC, hC_comparison, N, M, K);
+  std::cout << "Variant Benchmark 1 \n" << std::endl;
 
   // // ============================================================
   // // Variant 2 launch configuration
   // // ============================================================
-  // std::cout << "Variant Benchmark 2: \n";
-  // std::cout << "-> Description: Shared-memory tiled\n";
-  // experiment_parameters.utilized_implementation_id = 2;
-  // kernel_fusion_benchmark(experiment_parameters, hA, hB, hC, hC_comparison, N, M, K);
-  // std::cout << "Variant Benchmark 2 \n" << std::endl;
+  std::cout << "Variant Benchmark 2: \n";
+  std::cout << "-> Description: Shared-memory tiled\n";
+  experiment_parameters.utilized_implementation_id = 2;
+  kernel_fusion_benchmark(experiment_parameters, hA, hB, hC, hC_comparison, N, M, K);
+  std::cout << "Variant Benchmark 2 \n" << std::endl;
 
   // // ============================================================
   // // Variant 3 launch configuration
