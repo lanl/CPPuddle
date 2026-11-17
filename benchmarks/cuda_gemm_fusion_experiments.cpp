@@ -355,7 +355,7 @@ R kernel_fusion_benchmark_iteration(const size_t utilized_implementation_id,
   } else if (utilized_implementation_id == 8) {  // CUBLAS version
     if (postprocessing_active)
       reset_C_gpu(M, N, dC);
-    hpx::post(static_cast<hpx::cuda::experimental::cuda_executor>(exec), cublasSetStream, handle);
+    // hpx::post(static_cast<hpx::cuda::experimental::cuda_executor>(exec), cublasSetStream, handle);
     cublasDgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N, N, M, K, &alpha, dB, N, dA, K, &beta, dC, N);
     if (postprocessing_active && !check_gpu_results(M, N, dC, hC_comparison.data())) 
       std::cout << "-> ERROR: Variant CUBLAS faulty!" << std::endl;
@@ -633,6 +633,7 @@ int hpx_main(int argc, char *argv[]) {
   experiment_parameters.extra_graph_parameter = 5;
   experiment_parameters.postprocessing_active = true;
   experiment_parameters.utilized_futurization_mode = futurization_mode::then;
+  // experiment_parameters.utilized_futurization_mode = futurization_mode::none;
 
 
   hpx::cuda::experimental::detail::register_polling(hpx::resource::get_thread_pool(0));
@@ -666,9 +667,6 @@ int hpx_main(int argc, char *argv[]) {
   // ============================================================
   // Variant 0 launch configuration
   // ============================================================
-  // std::cout << "Variant Benchmark 0: Naive \n";
-  // kernel_fusion_benchmark(0, hA, hB, hC, hC_comparison, N, M, K);
-  // std::cout << "Variant Benchmark 0 end \n";
   std::cout << "Variant 0 Naive: \n";
   experiment_parameters.utilized_implementation_id = 0;
   kernel_fusion_benchmark(experiment_parameters, hA, hB, hC, hC_comparison, N, M, K);
@@ -740,11 +738,26 @@ int hpx_main(int argc, char *argv[]) {
   // // ============================================================
   // // Variant CUBLAS launch configuration
   // // ============================================================
-  // std::cout << "Variant Benchmark cublas: \n";
-  // std::cout << "-> Description: CUBLAS: \n";
-  // experiment_parameters.utilized_implementation_id = 8;
-  // kernel_fusion_benchmark(experiment_parameters, hA, hB, hC, hC_comparison, N, M, K);
-  // std::cout << "Variant Benchmark cublas end \n" << std::endl;
+  std::cout << "Variant Benchmark cublas: \n";
+  try {
+  // Check stacksize requirements for cublas
+  size_t min_bytes = 0x100000;
+  std::string val = hpx::get_config_entry("hpx.stacks.small_size", "0x8000");
+  std::size_t current_size = std::stoull(val, nullptr, 0);
+  if (current_size < min_bytes) {
+      throw std::runtime_error(
+          "Insufficient HPX small stack size (" + val + "). "
+          "Run with at least --hpx:ini=hpx.stacks.small_size=0x100000 for cublas test");
+  }
+  std::cout << "-> Description: CUBLAS: \n";
+  experiment_parameters.utilized_implementation_id = 8;
+  kernel_fusion_benchmark(experiment_parameters, hA, hB, hC, hC_comparison, N, M, K);
+  std::cout << "Variant Benchmark cublas end \n" << std::endl;
+  } catch (const std::exception& e) {
+      std::cerr << "ERROR: " << e.what() << "\n";
+      std::cerr << "CUBLAS TEST SKIPPED! " << std::endl;
+  }
+
 
 
   // ------------------------------------------------------------
