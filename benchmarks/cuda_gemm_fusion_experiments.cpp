@@ -204,13 +204,24 @@ R kernel_fusion_benchmark_iteration(const size_t utilized_implementation_id,
     static_assert(BN % TN == 0, "BN must be divisible by TN");
     dim3 block(BN / TN, BM / TM);
     dim3 grid((N + BN - 1) / BN, (M + BM - 1) / BM);
-    if (postprocessing_active)
-      reset_C_gpu(M, N, dC);
     if constexpr (!std::is_void_v<R>) {
+      if (postprocessing_active)
+        reset_C_gpu(M, N, dC, exec);
       void *args[] = {&M, &N, &K, &alpha, &dA, &dB, &beta, &dC};
       kernel_fut = hpx::async(static_cast<hpx::cuda::experimental::cuda_executor>(exec),
           cudaLaunchKernel<decltype(dgemm_register_tiled_v3<BM, BN, BK, TM, TN>)>, dgemm_register_tiled_v3<BM, BN, BK, TM, TN>, grid, block, args, 0);
+      if (postprocessing_active) {
+        kernel_fut = kernel_fut.then([extra_graph_parameter, M, N, &dC, &hC_comparison, underlying_exec](auto && fut) {
+          if(!check_gpu_results(M, N, dC, hC_comparison.data(), underlying_exec)) {
+                  std::cout << "-> ERROR: Variant 3 faulty!" << std::endl;
+          } else {
+                  std::cout << " =TEST_3 SUCCESS= ";
+          }
+        });
+      }
     } else {
+      if (postprocessing_active)
+        reset_C_gpu(M, N, dC);
       dgemm_register_tiled_v3<BM, BN, BK, TM, TN><<<grid, block>>>(
         M, N, K, alpha, dA, dB, beta, dC);
       if (postprocessing_active && !check_gpu_results(M, N, dC, hC_comparison.data())) 
@@ -223,13 +234,24 @@ R kernel_fusion_benchmark_iteration(const size_t utilized_implementation_id,
       (N + BN - 1) / BN,
       (M + BM - 1) / BM
     );
-    if (postprocessing_active)
-      reset_C_gpu(M, N, dC);
     if constexpr (!std::is_void_v<R>) {
+      if (postprocessing_active)
+        reset_C_gpu(M, N, dC, exec);
       void *args[] = {&M, &N, &K, &alpha, &dA, &dB, &beta, &dC};
       kernel_fut = hpx::async(static_cast<hpx::cuda::experimental::cuda_executor>(exec),
           cudaLaunchKernel<decltype(dgemm_v4_shared_register_tiled<BM, BN, BK, TM, TN>)>, dgemm_v4_shared_register_tiled<BM, BN, BK, TM, TN>, grid, block, args, 0);
+      if (postprocessing_active) {
+        kernel_fut = kernel_fut.then([extra_graph_parameter, M, N, &dC, &hC_comparison, underlying_exec](auto && fut) {
+          if(!check_gpu_results(M, N, dC, hC_comparison.data(), underlying_exec)) {
+                  std::cout << "-> ERROR: Variant 4 faulty!" << std::endl;
+          } else {
+                  std::cout << " =TEST_4 SUCCESS= ";
+          }
+        });
+      }
     } else {
+    if (postprocessing_active)
+      reset_C_gpu(M, N, dC);
       dgemm_v4_shared_register_tiled<BM, BN, BK, TM, TN>
         <<<grid, block>>>(
           M, N, K, alpha, dA, dB, beta, dC);
@@ -640,20 +662,20 @@ int hpx_main(int argc, char *argv[]) {
   // // ============================================================
   // // Variant 3 launch configuration
   // // ============================================================
-  // std::cout << "Variant Benchmark 3: \n";
-  // std::cout << "-> Description: Register tiled\n";
-  // experiment_parameters.utilized_implementation_id = 3;
-  // kernel_fusion_benchmark(experiment_parameters, hA, hB, hC, hC_comparison, N, M, K);
-  // std::cout << "Variant Benchmark end 3 \n" << std::endl;
+  std::cout << "Variant Benchmark 3: \n";
+  std::cout << "-> Description: Register tiled\n";
+  experiment_parameters.utilized_implementation_id = 3;
+  kernel_fusion_benchmark(experiment_parameters, hA, hB, hC, hC_comparison, N, M, K);
+  std::cout << "Variant Benchmark end 3 \n" << std::endl;
 
   // // ============================================================
   // // Variant 4 launch configuration
   // // ============================================================
-  // std::cout << "Variant Benchmark 4: \n";
-  // std::cout << "-> Description: Shared register tiled with better config\n";
-  // experiment_parameters.utilized_implementation_id = 4;
-  // kernel_fusion_benchmark(experiment_parameters, hA, hB, hC, hC_comparison, N, M, K);
-  // std::cout << "Variant Benchmark 4 end \n" << std::endl;
+  std::cout << "Variant Benchmark 4: \n";
+  std::cout << "-> Description: Shared register tiled with better config\n";
+  experiment_parameters.utilized_implementation_id = 4;
+  kernel_fusion_benchmark(experiment_parameters, hA, hB, hC, hC_comparison, N, M, K);
+  std::cout << "Variant Benchmark 4 end \n" << std::endl;
 
   // // ============================================================
   // // Variant 5 launch configuration

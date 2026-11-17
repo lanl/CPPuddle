@@ -55,13 +55,6 @@ bool check_gpu_results(int M, int N, double *C_device_results, const double *C_r
   return compare_matrices(M, N, c_host.data(), C_reference);
 }
 
-cudaError_t custom_async_cpy(cudaStream_t stream)
-    {
-      std::cerr << "test" << std::endl;
-      //   return cudaMemcpyAsync(dst, src, size, kind, stream);
-        return cudaSuccess;
-    }
-
 template <typename T>
 bool check_gpu_results(size_t M, size_t N, double *C_device_results, const double *C_reference, T &hpx_executor_wrapper) {
   // std::cout << "checking results ... " << std::endl;
@@ -72,6 +65,7 @@ bool check_gpu_results(size_t M, size_t N, double *C_device_results, const doubl
   std::vector<double, cppuddle::memory_recycling::detail::cuda_managed_memory_allocator<double>> c_host(M*N);
   auto memcpy_lambda =
     [](void* dst, void const* src, std::size_t size, cudaMemcpyKind kind, cudaStream_t stream) -> cudaError_t {
+      // TODO this seems to work with hpx 1.11 and kokkos 4.4.01 but not with 1.9.1/4.2.01 -- why?
        return cudaMemcpyAsync(dst, src, size, kind, stream);
     };
   hpx::post(
