@@ -250,8 +250,8 @@ R kernel_fusion_benchmark_iteration(const size_t utilized_implementation_id,
         });
       }
     } else {
-    if (postprocessing_active)
-      reset_C_gpu(M, N, dC);
+      if (postprocessing_active)
+        reset_C_gpu(M, N, dC);
       dgemm_v4_shared_register_tiled<BM, BN, BK, TM, TN>
         <<<grid, block>>>(
           M, N, K, alpha, dA, dB, beta, dC);
@@ -262,13 +262,24 @@ R kernel_fusion_benchmark_iteration(const size_t utilized_implementation_id,
     constexpr int BM = 64, BN = 64, BK = 8, TM = 4, TN = 4;
     dim3 block(BN / TN, BM / TM);
     dim3 grid((N + BN - 1) / BN, (M + BM - 1) / BM);
-    if (postprocessing_active)
-      reset_C_gpu(M, N, dC);
     if constexpr (!std::is_void_v<R>) {
+      if (postprocessing_active)
+        reset_C_gpu(M, N, dC, exec);
       void *args[] = {&M, &N, &K, &alpha, &dA, &dB, &beta, &dC};
       kernel_fut = hpx::async(static_cast<hpx::cuda::experimental::cuda_executor>(exec),
           cudaLaunchKernel<decltype(dgemm_v5_vectorized_register_tiled<BM, BN, BK, TM, TN>)>, dgemm_v5_vectorized_register_tiled<BM, BN, BK, TM, TN>, grid, block, args, 0);
+      if (postprocessing_active) {
+        kernel_fut = kernel_fut.then([extra_graph_parameter, M, N, &dC, &hC_comparison, underlying_exec](auto && fut) {
+          if(!check_gpu_results(M, N, dC, hC_comparison.data(), underlying_exec)) {
+                  std::cout << "-> ERROR: Variant 5 faulty!" << std::endl;
+          } else {
+                  std::cout << " =TEST_5 SUCCESS= ";
+          }
+        });
+      }
     } else {
+      if (postprocessing_active)
+        reset_C_gpu(M, N, dC);
       dgemm_v5_vectorized_register_tiled<BM, BN, BK, TM, TN>
         <<<grid, block>>>(
         M, N, K, alpha, dA, dB, beta, dC);
@@ -285,13 +296,24 @@ R kernel_fusion_benchmark_iteration(const size_t utilized_implementation_id,
     }
     dim3 block(512);
     dim3 grid(N / BN, M / BM);
-    if (postprocessing_active)
-      reset_C_gpu(M, N, dC);
     if constexpr (!std::is_void_v<R>) {
+      if (postprocessing_active)
+        reset_C_gpu(M, N, dC, exec);
       void *args[] = {&M, &N, &K, &alpha, &dA, &dB, &beta, &dC};
       kernel_fut = hpx::async(static_cast<hpx::cuda::experimental::cuda_executor>(exec),
           cudaLaunchKernel<decltype(dgemm_v6_fp64_wmma_tiled<BM, BN, BK>)>, dgemm_v6_fp64_wmma_tiled<BM, BN, BK>, grid, block, args, 0);
+      if (postprocessing_active) {
+        kernel_fut = kernel_fut.then([extra_graph_parameter, M, N, &dC, &hC_comparison, underlying_exec](auto && fut) {
+          if(!check_gpu_results(M, N, dC, hC_comparison.data(), underlying_exec)) {
+                  std::cout << "-> ERROR: Variant 6 faulty!" << std::endl;
+          } else {
+                  std::cout << " =TEST_6 SUCCESS= ";
+          }
+        });
+      }
     } else {
+      if (postprocessing_active)
+        reset_C_gpu(M, N, dC);
       dgemm_v6_fp64_wmma_tiled<BM, BN, BK><<<grid,  block>>>(
         M, N, K, alpha, dA, dB, beta, dC);
       if (postprocessing_active && !check_gpu_results(M, N, dC, hC_comparison.data())) 
@@ -307,13 +329,24 @@ R kernel_fusion_benchmark_iteration(const size_t utilized_implementation_id,
     }
     dim3 block(256);
     dim3 grid(N / BN, M / BM);
-    if (postprocessing_active)
-      reset_C_gpu(M, N, dC);
     if constexpr (!std::is_void_v<R>) {
+      if (postprocessing_active)
+        reset_C_gpu(M, N, dC, exec);
       void *args[] = {&M, &N, &K, &alpha, &dA, &dB, &beta, &dC};
       kernel_fut = hpx::async(static_cast<hpx::cuda::experimental::cuda_executor>(exec),
           cudaLaunchKernel<decltype(dgemm_v7_fp64_wmma_64x64_8warps<BM, BN, BK>)>, dgemm_v7_fp64_wmma_64x64_8warps<BM, BN, BK>, grid, block, args, 0);
+      if (postprocessing_active) {
+        kernel_fut = kernel_fut.then([extra_graph_parameter, M, N, &dC, &hC_comparison, underlying_exec](auto && fut) {
+          if(!check_gpu_results(M, N, dC, hC_comparison.data(), underlying_exec)) {
+                  std::cout << "-> ERROR: Variant 7 faulty!" << std::endl;
+          } else {
+                  std::cout << " =TEST_7 SUCCESS= ";
+          }
+        });
+      }
     } else {
+      if (postprocessing_active)
+        reset_C_gpu(M, N, dC);
       dgemm_v7_fp64_wmma_64x64_8warps<BM, BN, BK>
         <<<grid, block>>>(M, N, K, alpha, dA, dB, beta, dC);
       if (postprocessing_active && !check_gpu_results(M, N, dC, hC_comparison.data())) 
@@ -680,30 +713,33 @@ int hpx_main(int argc, char *argv[]) {
   // // ============================================================
   // // Variant 5 launch configuration
   // // ============================================================
-  // std::cout << "Variant Benchmark 5: \n";
-  // std::cout << "-> Description: Vectorized shared register tiled\n";
-  // experiment_parameters.utilized_implementation_id = 5;
-  // kernel_fusion_benchmark(experiment_parameters, hA, hB, hC, hC_comparison, N, M, K);
-  // std::cout << "Variant Benchmark 5 end \n" << std::endl;
+  std::cout << "Variant Benchmark 5: \n";
+  std::cout << "-> Description: Vectorized shared register tiled\n";
+  experiment_parameters.utilized_implementation_id = 5;
+  kernel_fusion_benchmark(experiment_parameters, hA, hB, hC, hC_comparison, N, M, K);
+  std::cout << "Variant Benchmark 5 end \n" << std::endl;
 
   // // ============================================================
   // // Variant 6 launch configuration
   // // ============================================================
-  // std::cout << "Variant Benchmark 6: \n";
-  // std::cout << "-> Description: WMMA\n";
-  // experiment_parameters.utilized_implementation_id = 6;
-  // kernel_fusion_benchmark(experiment_parameters, hA, hB, hC, hC_comparison, N, M, K);
-  // std::cout << "Variant Benchmark 6 end \n" << std::endl;
+  std::cout << "Variant Benchmark 6: \n";
+  std::cout << "-> Description: WMMA\n";
+  experiment_parameters.utilized_implementation_id = 6;
+  kernel_fusion_benchmark(experiment_parameters, hA, hB, hC, hC_comparison, N, M, K);
+  std::cout << "Variant Benchmark 6 end \n" << std::endl;
 
   // // ============================================================
   // // Variant 7 launch configuration
   // // ============================================================
-  // std::cout << "Variant Benchmark 7: \n";
-  // std::cout << "-> Description: Better WMMA\n";
-  // experiment_parameters.utilized_implementation_id = 7;
-  // kernel_fusion_benchmark(experiment_parameters, hA, hB, hC, hC_comparison, N, M, K);
-  // std::cout << "Variant Benchmark 7 end \n" << std::endl;
+  std::cout << "Variant Benchmark 7: \n";
+  std::cout << "-> Description: Better WMMA\n";
+  experiment_parameters.utilized_implementation_id = 7;
+  kernel_fusion_benchmark(experiment_parameters, hA, hB, hC, hC_comparison, N, M, K);
+  std::cout << "Variant Benchmark 7 end \n" << std::endl;
 
+  // // ============================================================
+  // // Variant CUBLAS launch configuration
+  // // ============================================================
   // std::cout << "Variant Benchmark cublas: \n";
   // std::cout << "-> Description: CUBLAS: \n";
   // experiment_parameters.utilized_implementation_id = 8;
