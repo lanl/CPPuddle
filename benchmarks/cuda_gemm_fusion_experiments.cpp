@@ -1,4 +1,3 @@
-#include <hpx/include/async.hpp>
 #include <hpx/include/lcos.hpp>
 #include <hpx/hpx_init.hpp>
 #include <hpx/include/iostreams.hpp>
@@ -21,7 +20,7 @@
 #include "gemm_cpu_utils.hpp"
 #include "cuda_gemm_kernels.hpp"
 
-#include "cppuddle/executor_recycling/executor_pools_interface.hpp""
+#include "cppuddle/executor_recycling/executor_pools_interface.hpp"
 
 // ------------------------------------------------------------
 // Computes:
@@ -46,7 +45,6 @@ struct experiment_setup {
   bool postprocessing_active;
   fusion_mode utilized_fusion_approach;
   futurization_mode utilized_futurization_mode;
-  futurization_mode futurized;
 };
 
 
@@ -107,27 +105,40 @@ R kernel_fusion_benchmark_iteration(const size_t utilized_implementation_id,
   cppuddle::executor_recycling::executor_interface<hpx::cuda::experimental::cuda_executor,
     cppuddle::executor_recycling::round_robin_pool_impl<
       hpx::cuda::experimental::cuda_executor>> exec{0};
+  hpx::cuda::experimental::cuda_executor &underlying_exec = exec.operator hpx::cuda::experimental::cuda_executor&();
+
   if (utilized_implementation_id == 0) {
     dim3 block(16, 16);
     dim3 grid(
         (N + block.x - 1) / block.x,
         (M + block.y - 1) / block.y
     );
-    if (postprocessing_active)
-      reset_C_gpu(M, N, dC);
     // start_timer = std::chrono::high_resolution_clock::now();
     // preprocessing?
     if constexpr (!std::is_void_v<R>) {
+      if (postprocessing_active)
+        reset_C_gpu(M, N, dC, exec);
       void *args[] = {&M, &N, &K, &alpha, &dA, &dB, &beta, &dC};
       kernel_fut = hpx::async(static_cast<hpx::cuda::experimental::cuda_executor>(exec),
           cudaLaunchKernel<decltype(dgemm_naive_unoptimized_v0)>, dgemm_naive_unoptimized_v0,  grid, block, args, 0);
+      if (postprocessing_active) {
+        kernel_fut = kernel_fut.then([extra_graph_parameter, M, N, &dC, &hC_comparison, underlying_exec](auto && fut) {
+          if(!check_gpu_results(M, N, dC, hC_comparison.data(), underlying_exec)) {
+                  std::cout << "-> ERROR: Variant 0 faulty!" << std::endl;
+          } else {
+                  std::cout << " =TEST SUCCESS= ";
+          }
+        });
+      }
     } else {
-       dgemm_naive_unoptimized_v0<<<grid, block>>>(
+      if (postprocessing_active)
+        reset_C_gpu(M, N, dC);
+      dgemm_naive_unoptimized_v0<<<grid, block>>>(
           M, N, K, alpha, dA, dB, beta, dC);
+      // postprocessing
+      if (postprocessing_active && !check_gpu_results(M, N, dC, hC_comparison.data())) 
+        std::cout << "-> ERROR: Variant 0 faulty!" << std::endl;
     }
-    // postprocessing
-    if (postprocessing_active && !check_gpu_results(M, N, dC, hC_comparison.data())) 
-      std::cout << "-> ERROR: Variant 0 faulty!" << std::endl;
   } else if (utilized_implementation_id == 1) {
     dim3 block(16, 16);
     dim3 grid(
@@ -142,11 +153,11 @@ R kernel_fusion_benchmark_iteration(const size_t utilized_implementation_id,
       kernel_fut = hpx::async(static_cast<hpx::cuda::experimental::cuda_executor>(exec),
           cudaLaunchKernel<decltype(dgemm_naive_v1)>, dgemm_naive_v1, grid, block, args, 0);
     } else {
-       dgemm_naive_v1<<<grid, block>>>(
+      dgemm_naive_v1<<<grid, block>>>(
           M, N, K, alpha, dA, dB, beta, dC);
+      if (postprocessing_active && !check_gpu_results(M, N, dC, hC_comparison.data())) 
+        std::cout << "-> ERROR: Variant 1 faulty!" << std::endl;
     }
-    if (postprocessing_active && !check_gpu_results(M, N, dC, hC_comparison.data())) 
-      std::cout << "-> ERROR: Variant 1 faulty!" << std::endl;
   } else if (utilized_implementation_id == 2) {
     constexpr int TILE = 32;
     dim3 block(TILE, TILE);
@@ -163,9 +174,9 @@ R kernel_fusion_benchmark_iteration(const size_t utilized_implementation_id,
     } else {
       dgemm_shared_tiled_v2<TILE><<<grid, block>>>(
         M, N, K, alpha, dA, dB, beta, dC);
+      if (postprocessing_active && !check_gpu_results(M, N, dC, hC_comparison.data())) 
+        std::cout << "-> ERROR: Variant 2 faulty!" << std::endl;
     }
-    if (postprocessing_active && !check_gpu_results(M, N, dC, hC_comparison.data())) 
-      std::cout << "-> ERROR: Variant 2 faulty!" << std::endl;
   } else if (utilized_implementation_id == 3) {
     constexpr int BM = 64, BN = 64, BK = 8, TM = 4, TN = 4;
     static_assert(BM % TM == 0, "BM must be divisible by TM");
@@ -181,9 +192,9 @@ R kernel_fusion_benchmark_iteration(const size_t utilized_implementation_id,
     } else {
       dgemm_register_tiled_v3<BM, BN, BK, TM, TN><<<grid, block>>>(
         M, N, K, alpha, dA, dB, beta, dC);
+      if (postprocessing_active && !check_gpu_results(M, N, dC, hC_comparison.data())) 
+        std::cout << "-> ERROR: Variant 3 faulty!" << std::endl;
     }
-    if (postprocessing_active && !check_gpu_results(M, N, dC, hC_comparison.data())) 
-      std::cout << "-> ERROR: Variant 3 faulty!" << std::endl;
   } else if (utilized_implementation_id == 4) {
     constexpr int BM = 64, BN = 32, BK = 16, TM = 4, TN = 2;
     dim3 block(BN / TN, BM / TM);
@@ -201,9 +212,9 @@ R kernel_fusion_benchmark_iteration(const size_t utilized_implementation_id,
       dgemm_v4_shared_register_tiled<BM, BN, BK, TM, TN>
         <<<grid, block>>>(
           M, N, K, alpha, dA, dB, beta, dC);
+      if (postprocessing_active && !check_gpu_results(M, N, dC, hC_comparison.data())) 
+        std::cout << "-> ERROR: Variant 4 faulty!" << std::endl;
     }
-    if (postprocessing_active && !check_gpu_results(M, N, dC, hC_comparison.data())) 
-      std::cout << "-> ERROR: Variant 4 faulty!" << std::endl;
   } else if (utilized_implementation_id == 5) {
     constexpr int BM = 64, BN = 64, BK = 8, TM = 4, TN = 4;
     dim3 block(BN / TN, BM / TM);
@@ -218,9 +229,9 @@ R kernel_fusion_benchmark_iteration(const size_t utilized_implementation_id,
       dgemm_v5_vectorized_register_tiled<BM, BN, BK, TM, TN>
         <<<grid, block>>>(
         M, N, K, alpha, dA, dB, beta, dC);
+      if (postprocessing_active && !check_gpu_results(M, N, dC, hC_comparison.data())) 
+        std::cout << "-> ERROR: Variant 5 faulty!" << std::endl;
     }
-    if (postprocessing_active && !check_gpu_results(M, N, dC, hC_comparison.data())) 
-      std::cout << "-> ERROR: Variant 5 faulty!" << std::endl;
   } else if (utilized_implementation_id == 6) {
     constexpr int BM = 64, BN = 64, BK = 16;
     if ((M % BM) != 0 || (N % BN) != 0 || (K % BK) != 0) {
@@ -240,9 +251,9 @@ R kernel_fusion_benchmark_iteration(const size_t utilized_implementation_id,
     } else {
       dgemm_v6_fp64_wmma_tiled<BM, BN, BK><<<grid,  block>>>(
         M, N, K, alpha, dA, dB, beta, dC);
+      if (postprocessing_active && !check_gpu_results(M, N, dC, hC_comparison.data())) 
+        std::cout << "-> ERROR: Variant 6 faulty!" << std::endl;
     }
-    if (postprocessing_active && !check_gpu_results(M, N, dC, hC_comparison.data())) 
-      std::cout << "-> ERROR: Variant 6 faulty!" << std::endl;
   } else if (utilized_implementation_id == 7) {
     constexpr int BM = 64, BN = 64, BK = 16;
     if ((M % BM) != 0 || (N % BN) != 0 || (K % BK) != 0) {
@@ -262,9 +273,9 @@ R kernel_fusion_benchmark_iteration(const size_t utilized_implementation_id,
     } else {
       dgemm_v7_fp64_wmma_64x64_8warps<BM, BN, BK>
         <<<grid, block>>>(M, N, K, alpha, dA, dB, beta, dC);
+      if (postprocessing_active && !check_gpu_results(M, N, dC, hC_comparison.data())) 
+        std::cout << "-> ERROR: Variant 7 faulty!" << std::endl;
     }
-    if (postprocessing_active && !check_gpu_results(M, N, dC, hC_comparison.data())) 
-      std::cout << "-> ERROR: Variant 7 faulty!" << std::endl;
   } else if (utilized_implementation_id == 8) {  // CUBLAS version
     if (postprocessing_active)
       reset_C_gpu(M, N, dC);
@@ -280,18 +291,24 @@ R kernel_fusion_benchmark_iteration(const size_t utilized_implementation_id,
       std::cout << "-> ERROR: Variant CPU faulty!" << std::endl;
   }
 
+  // if constexpr (!std::is_void_v<R>) 
+  //   kernel_fut.get();
   if (utilized_graph_mode == graph_mode::serial) {
     if (extra_graph_parameter > 1) {
-      
       if constexpr (!std::is_void_v<R>) {
+        // ret_fut = kernel_fut.then(
         ret_fut = kernel_fut.then(
             [=, &handle, &hA, &hB, &hC, &hC_comparison](auto && fut) {
-          kernel_fusion_benchmark_iteration<R>(utilized_implementation_id, alpha, beta, hA, hB, std::ref(hC),
+          return kernel_fusion_benchmark_iteration<R>(utilized_implementation_id, alpha, beta, hA, hB, std::ref(hC),
           dA, dB, dC, hC_comparison, M, N, K, std::ref(handle), utilized_graph_mode, extra_graph_parameter - 1, postprocessing_active);
             });
       } else {
          kernel_fusion_benchmark_iteration<R>(utilized_implementation_id, alpha, beta, hA, hB, std::ref(hC),
              dA, dB, dC, hC_comparison, M, N, K, std::ref(handle), utilized_graph_mode, extra_graph_parameter - 1, postprocessing_active);
+      }
+    } else {
+      if constexpr (!std::is_void_v<R>) {
+        return kernel_fut;
       }
     }
   }
@@ -320,7 +337,7 @@ void kernel_fusion_benchmark(const experiment_setup &experiment_parameters,
   const size_t &extra_graph_parameter = experiment_parameters.extra_graph_parameter;
   const bool &postprocessing_active = experiment_parameters.postprocessing_active;
   const fusion_mode &utilized_fusion_approach = experiment_parameters.utilized_fusion_approach;
-  const futurization_mode &futurized = experiment_parameters.futurized;
+  const futurization_mode &utilized_futurization_mode = experiment_parameters.utilized_futurization_mode;
 
 
   const double flops = 2.0 * static_cast<double>(M)
@@ -356,7 +373,7 @@ void kernel_fusion_benchmark(const experiment_setup &experiment_parameters,
   // repeat experiment n times (otherwise the cuda graphs will lose badly)
   // ... needs separate methods (cannot extend the recursion over the loop
 
-  if (futurized == futurization_mode::then) {
+  if (utilized_futurization_mode == futurization_mode::then) {
     auto loop_fut = hpx::make_ready_future<void>();
     for (size_t it = 0; it < num_repetitions; it++) {
       loop_fut = loop_fut.then(
@@ -530,25 +547,23 @@ int hpx_main(int argc, char *argv[]) {
   // ------------------------------------------------------------
   std::cout << "\nResults\n";
   std::cout << "-------\n\n";
-  const size_t  num_repetitions = 10;
-  const graph_mode utilized_graph_mode = graph_mode::serial;  
-  const size_t extra_graph_parameter = 10;
-  const bool postprocessing_active = false;
 
   experiment_setup experiment_parameters;
-  experiment_parameters.num_repetitions = 10;
+  // experiment_parameters.num_repetitions = 10;
+ experiment_parameters.num_repetitions = 5;
   experiment_parameters.utilized_implementation_id = 9;
   experiment_parameters.utilized_fusion_approach = fusion_mode::none;
   experiment_parameters.utilized_graph_mode = graph_mode::serial;
-  experiment_parameters.extra_graph_parameter = 10;
-  experiment_parameters.postprocessing_active = false;
+  experiment_parameters.extra_graph_parameter = 5;
+  experiment_parameters.postprocessing_active = true;
   experiment_parameters.utilized_futurization_mode = futurization_mode::then;
 
 
   hpx::cuda::experimental::detail::register_polling(hpx::resource::get_thread_pool(0));
   cppuddle::executor_recycling::executor_pool::init_executor_pool<hpx::cuda::experimental::cuda_executor,
     cppuddle::executor_recycling::round_robin_pool_impl<
-      hpx::cuda::experimental::cuda_executor>>(0, 128, 0, true);
+      // hpx::cuda::experimental::cuda_executor>>(0, 128, 0, true);
+      hpx::cuda::experimental::cuda_executor>>(0, 1, 0, true);
 
   // ============================================================
   // CPU Comparison variant (datA)
@@ -583,383 +598,75 @@ int hpx_main(int argc, char *argv[]) {
   kernel_fusion_benchmark(experiment_parameters, hA, hB, hC, hC_comparison, N, M, K);
   std::cout << "Variant 0 Naive \n" << std::endl;
 
-  // std::cout << "Variant 0: Naive \n";
-  // auto start_v0 = std::chrono::high_resolution_clock::now();
-  // for (int repeat = 0; repeat < num_repeats; ++repeat) {
-  //   dgemm_naive_unoptimized_v0<<<grid_v1, block_v1>>>(
-  //     M, N, K, alpha, dA, dB, beta, dC);
-  // }
-  // cudaGetLastError();
-  // cudaDeviceSynchronize();
-  // auto end_v0 = std::chrono::high_resolution_clock::now();
-  // std::chrono::duration<double> elapsed_v0 = end_v0 - start_v0;
-  // double total_seconds_v0 = elapsed_v0.count();
-  // double avg_seconds_v0 = total_seconds_v0 / static_cast<double>(num_repeats);
-  // double gflops_v0 = flops / avg_seconds_v0 / 1.0e9;
-  // if (check_gpu_results(M, N, dC, hC_comparison.data())) 
-  //   std::cout << "-> Results correct!" << std::endl;
-  // else
-  //   std::cout << "-> ERROR: Variant 0 faulty!" << std::endl;
-  // std::cout << "-> Average Runtime: " << avg_seconds_v0 * 1.0e3 << "ms\n";
-  // std::cout << "-> Performance: " << gflops_v0 << " GFLOP/s\n";
-  // std::cout << std::endl;
-    
+  // // ============================================================
+  // // Variant 1 launch configuration
+  // // ============================================================
+  // std::cout << "Variant Benchmark 1: \n";
+  // std::cout << "-> Description: Naive but with optimized access pattern\n";
+  // experiment_parameters.utilized_implementation_id = 1;
+  // kernel_fusion_benchmark(experiment_parameters, hA, hB, hC, hC_comparison, N, M, K);
+  // std::cout << "Variant Benchmark 1 \n" << std::endl;
 
-  // ============================================================
-  // Variant 1 launch configuration
-  // ============================================================
-  std::cout << "Variant Benchmark 1: \n";
-  std::cout << "-> Description: Naive but with optimized access pattern\n";
-  experiment_parameters.utilized_implementation_id = 1;
-  kernel_fusion_benchmark(experiment_parameters, hA, hB, hC, hC_comparison, N, M, K);
-  std::cout << "Variant Benchmark 1 \n" << std::endl;
+  // // ============================================================
+  // // Variant 2 launch configuration
+  // // ============================================================
+  // std::cout << "Variant Benchmark 2: \n";
+  // std::cout << "-> Description: Shared-memory tiled\n";
+  // experiment_parameters.utilized_implementation_id = 2;
+  // kernel_fusion_benchmark(experiment_parameters, hA, hB, hC, hC_comparison, N, M, K);
+  // std::cout << "Variant Benchmark 2 \n" << std::endl;
 
-  // std::cout << "Variant 1: Naive but with optimized access pattern\n";
-  // auto start_v1 = std::chrono::high_resolution_clock::now();
-  // for (int repeat = 0; repeat < num_repeats; ++repeat) {
-  //   dgemm_naive_v1<<<grid_v1, block_v1>>>(
-  //     M, N, K, alpha, dA, dB, beta, dC);
-  // }
-  // cudaGetLastError();
-  // cudaDeviceSynchronize();
-  // auto end_v1 = std::chrono::high_resolution_clock::now();
+  // // ============================================================
+  // // Variant 3 launch configuration
+  // // ============================================================
+  // std::cout << "Variant Benchmark 3: \n";
+  // std::cout << "-> Description: Register tiled\n";
+  // experiment_parameters.utilized_implementation_id = 3;
+  // kernel_fusion_benchmark(experiment_parameters, hA, hB, hC, hC_comparison, N, M, K);
+  // std::cout << "Variant Benchmark end 3 \n" << std::endl;
 
-  // std::chrono::duration<double> elapsed_v1 = end_v1 - start_v1;
-  // double total_seconds_v1 = elapsed_v1.count();
-  // double avg_seconds_v1 = total_seconds_v1 / static_cast<double>(num_repeats);
-  // double gflops_v1 = flops / avg_seconds_v1 / 1.0e9;
-  // std::cout << "-> Block: " << block_v1.x << " x " << block_v1.y << "\n";
-  // std::cout << "-> Grid:  " << grid_v1.x  << " x " << grid_v1.y  << "\n";
-  // if (check_gpu_results(M, N, dC, hC_comparison.data())) 
-  //   std::cout << "-> Results correct!" << std::endl;
-  // else
-  //   std::cout << "-> ERROR: Variant 1 faulty!" << std::endl;
-  // std::cout << "-> average runtime: " << avg_seconds_v1 * 1.0e3 << "ms\n";
-  // std::cout << "-> performance: " << gflops_v1 << " GLOP/s\n";
-  // std::cout << std::endl;
+  // // ============================================================
+  // // Variant 4 launch configuration
+  // // ============================================================
+  // std::cout << "Variant Benchmark 4: \n";
+  // std::cout << "-> Description: Shared register tiled with better config\n";
+  // experiment_parameters.utilized_implementation_id = 4;
+  // kernel_fusion_benchmark(experiment_parameters, hA, hB, hC, hC_comparison, N, M, K);
+  // std::cout << "Variant Benchmark 4 end \n" << std::endl;
 
-  // // Optionally copy result back to host
-  // cudaMemcpy(hC.data(), dC, bytesC, cudaMemcpyDeviceToHost);
+  // // ============================================================
+  // // Variant 5 launch configuration
+  // // ============================================================
+  // std::cout << "Variant Benchmark 5: \n";
+  // std::cout << "-> Description: Vectorized shared register tiled\n";
+  // experiment_parameters.utilized_implementation_id = 5;
+  // kernel_fusion_benchmark(experiment_parameters, hA, hB, hC, hC_comparison, N, M, K);
+  // std::cout << "Variant Benchmark 5 end \n" << std::endl;
 
+  // // ============================================================
+  // // Variant 6 launch configuration
+  // // ============================================================
+  // std::cout << "Variant Benchmark 6: \n";
+  // std::cout << "-> Description: WMMA\n";
+  // experiment_parameters.utilized_implementation_id = 6;
+  // kernel_fusion_benchmark(experiment_parameters, hA, hB, hC, hC_comparison, N, M, K);
+  // std::cout << "Variant Benchmark 6 end \n" << std::endl;
 
-  // ============================================================
-  // Variant 2 launch configuration
-  // ============================================================
-  std::cout << "Variant Benchmark 2: \n";
-  std::cout << "-> Description: Shared-memory tiled\n";
-  experiment_parameters.utilized_implementation_id = 2;
-  kernel_fusion_benchmark(experiment_parameters, hA, hB, hC, hC_comparison, N, M, K);
-  std::cout << "Variant Benchmark 2 \n" << std::endl;
+  // // ============================================================
+  // // Variant 7 launch configuration
+  // // ============================================================
+  // std::cout << "Variant Benchmark 7: \n";
+  // std::cout << "-> Description: Better WMMA\n";
+  // experiment_parameters.utilized_implementation_id = 7;
+  // kernel_fusion_benchmark(experiment_parameters, hA, hB, hC, hC_comparison, N, M, K);
+  // std::cout << "Variant Benchmark 7 end \n" << std::endl;
 
-  // std::cout << "Variant 2: shared-memory tiled\n";
+  // std::cout << "Variant Benchmark cublas: \n";
+  // std::cout << "-> Description: CUBLAS: \n";
+  // experiment_parameters.utilized_implementation_id = 8;
+  // kernel_fusion_benchmark(experiment_parameters, hA, hB, hC, hC_comparison, N, M, K);
+  // std::cout << "Variant Benchmark cublas end \n" << std::endl;
 
-  // constexpr int TILE_V2 = 32;
-  // dim3 block_v2(TILE_V2, TILE_V2);
-  // dim3 grid_v2(
-  //   (N + TILE_V2 - 1) / TILE_V2,
-  //   (M + TILE_V2 - 1) / TILE_V2
-  // );
-  // auto start_v2 = std::chrono::high_resolution_clock::now();
-  // for (int repeat = 0; repeat < num_repeats; ++repeat) {
-  //   dgemm_shared_tiled_v2<TILE_V2><<<grid_v2, block_v2>>>(
-  //     M, N, K, alpha, dA, dB, beta, dC);
-  // }
-  // cudaGetLastError();
-  // cudaDeviceSynchronize();
-  // auto end_v2 = std::chrono::high_resolution_clock::now();
-  // std::chrono::duration<double> elapsed_v2 = end_v2 - start_v2;
-  // double total_seconds_v2 = elapsed_v2.count();
-  // double avg_seconds_v2 = total_seconds_v2 / static_cast<double>(num_repeats);
-  // double gflops_v2 = flops / avg_seconds_v2 / 1.0e9;
-  // std::cout << "-> Block: " << block_v2.x << " x " << block_v2.y << "\n";
-  // std::cout << "-> Grid:  " << grid_v2.x  << " x " << grid_v2.y  << "\n";
-  // if (check_gpu_results(M, N, dC, hC_comparison.data())) 
-  //   std::cout << "-> Results correct!" << std::endl;
-  // else
-  //   std::cout << "-> ERROR: Variant 2 faulty!" << std::endl;
-  // std::cout << "-> average runtime: " << avg_seconds_v2 * 1.0e3 << "ms\n";
-  // std::cout << "-> performance: " << gflops_v2 << " GLOP/s\n";
-  // std::cout << std::endl;
-
-
-  // ============================================================
-  // Variant 3 launch configuration
-  // ============================================================
-  std::cout << "Variant Benchmark 3: \n";
-  std::cout << "-> Description: Register tiled\n";
-  experiment_parameters.utilized_implementation_id = 3;
-  kernel_fusion_benchmark(experiment_parameters, hA, hB, hC, hC_comparison, N, M, K);
-  std::cout << "Variant Benchmark end 3 \n" << std::endl;
-
-  // std::cout << "Variant 3: register tiled\n";
-  // constexpr int BM_v3 = 64;
-  // constexpr int BN_v3 = 64;
-  // constexpr int BK_v3 = 8;
-  // constexpr int TM_v3 = 4;
-  // constexpr int TN_v3 = 4;
-
-  // static_assert(BM_v3 % TM_v3 == 0, "BM must be divisible by TM");
-  // static_assert(BN_v3 % TN_v3 == 0, "BN must be divisible by TN");
-
-  // dim3 block_v3(BN_v3 / TN_v3, BM_v3 / TM_v3);
-  // dim3 grid_v3(
-  //   (N + BN_v3 - 1) / BN_v3,
-  //   (M + BM_v3 - 1) / BM_v3
-  // );
-  // auto start_v3 = std::chrono::high_resolution_clock::now();
-  // for (int repeat = 0; repeat < num_repeats; ++repeat) {
-  //   dgemm_register_tiled_v3<BM_v3, BN_v3, BK_v3, TM_v3, TN_v3><<<grid_v3, block_v3>>>(
-  //     M, N, K, alpha, dA, dB, beta, dC);
-  // }
-  // cudaGetLastError();
-  // cudaDeviceSynchronize();
-  // auto end_v3 = std::chrono::high_resolution_clock::now();
-  // std::chrono::duration<double> elapsed_v3 = end_v3 - start_v3;
-  // double total_seconds_v3 = elapsed_v3.count();
-  // double avg_seconds_v3 = total_seconds_v3 / static_cast<double>(num_repeats);
-  // double gflops_v3 = flops / avg_seconds_v3 / 1.0e9;
-
-  // // std::cout << "-> BM = " << BM_v3 << ", BN = " << BN_v3
-  // //           << ", BK = " << BK_v3 << "\n";
-  // // std::cout << "-> TM = " << TM_v3 << ", TN = " << TN_v3 << "\n";
-  // std::cout << "-> Block: " << block_v3.x << " x " << block_v3.y << "\n";
-  // std::cout << "-> Grid:  " << grid_v3.x  << " x " << grid_v3.y  << "\n";
-  // if (check_gpu_results(M, N, dC, hC_comparison.data())) 
-  //   std::cout << "-> Results correct!" << std::endl;
-  // else
-  //   std::cout << "-> ERROR: Variant 3 faulty!" << std::endl;
-  // std::cout << "-> average runtime: " << avg_seconds_v3 * 1.0e3 << "ms\n";
-  // std::cout << "-> performance: " << gflops_v3 << " GLOP/s\n";
-  // std::cout << std::endl;
-
-  // ============================================================
-  // Variant 4 launch configuration
-  // ============================================================
-  std::cout << "Variant Benchmark 4: \n";
-  std::cout << "-> Description: Shared register tiled with better config\n";
-  experiment_parameters.utilized_implementation_id = 4;
-  kernel_fusion_benchmark(experiment_parameters, hA, hB, hC, hC_comparison, N, M, K);
-  std::cout << "Variant Benchmark 4 end \n" << std::endl;
-  // std::cout << "Variant 4: shared register tiled with better ccnfig\n";
-
-  // constexpr int BM_v4 = 64;
-  // constexpr int BN_v4 = 32;
-  // constexpr int BK_v4 = 16;
-  // constexpr int TM_v4 = 4;
-  // constexpr int TN_v4 = 2;
-
-  // dim3 block_v4(BN_v4 / TN_v4, BM_v4 / TM_v4);
-  // dim3 grid_v4(
-  //   (N + BN_v4 - 1) / BN_v4,
-  //   (M + BM_v4 - 1) / BM_v4
-  // );
-  // auto start_v4 = std::chrono::high_resolution_clock::now();
-  // for (int repeat = 0; repeat < num_repeats; ++repeat) {
-  //   dgemm_v4_shared_register_tiled<BM_v4, BN_v4, BK_v4, TM_v4, TN_v4>
-  //     <<<grid_v4, block_v4>>>(
-  //       M, N, K, alpha, dA, dB, beta, dC);
-  // }
-  // cudaGetLastError();
-  // cudaDeviceSynchronize();
-  // auto end_v4 = std::chrono::high_resolution_clock::now();
-  // std::chrono::duration<double> elapsed_v4 = end_v4 - start_v4;
-  // double total_seconds_v4 = elapsed_v4.count();
-  // double avg_seconds_v4 = total_seconds_v4 / static_cast<double>(num_repeats);
-  // double gflops_v4 = flops / avg_seconds_v4 / 1.0e9;
-
-  // // std::cout << "-> BM = " << BM_v4 << ", BN = " << BN_v4
-  // //           << ", BK = " << BK_v4 << "\n";
-  // // std::cout << "-> TM = " << TM_v4 << ", TN = " << TN_v4 << "\n";
-  // std::cout << "-> Block: " << block_v4.x << " x " << block_v4.y << "\n";
-  // std::cout << "-> Grid:  " << grid_v4.x  << " x " << grid_v4.y  << "\n";
-  // if (check_gpu_results(M, N, dC, hC_comparison.data())) 
-  //   std::cout << "-> Results correct!" << std::endl;
-  // else
-  //   std::cout << "-> ERROR: Variant 4 faulty!" << std::endl;
-  // std::cout << "-> average runtime: " << avg_seconds_v4 * 1.0e3 << "ms\n";
-  // std::cout << "-> performance: " << gflops_v4 << " GLOP/s\n";
-  // std::cout << std::endl;
-
-  // ============================================================
-  // Variant 5 launch configuration
-  // ============================================================
-  std::cout << "Variant Benchmark 5: \n";
-  std::cout << "-> Description: Vectorized shared register tiled\n";
-  experiment_parameters.utilized_implementation_id = 5;
-  kernel_fusion_benchmark(experiment_parameters, hA, hB, hC, hC_comparison, N, M, K);
-  std::cout << "Variant Benchmark 5 end \n" << std::endl;
-  // std::cout << "Variant 5: vectorized shared register tiled\n";
-
-  // constexpr int BM_v5 = 64;
-  // constexpr int BN_v5 = 64;
-  // constexpr int BK_v5 = 8;
-  // constexpr int TM_v5 = 4;
-  // constexpr int TN_v5 = 4;
-
-  // dim3 block_v5(BN_v5 / TN_v5, BM_v5 / TM_v5);
-  // dim3 grid_v5(
-  //   (N + BN_v5 - 1) / BN_v5,
-  //   (M + BM_v5 - 1) / BM_v5
-  // );
-  // auto start_v5 = std::chrono::high_resolution_clock::now();
-  // for (int repeat = 0; repeat < num_repeats; ++repeat) {
-  //   dgemm_v5_vectorized_register_tiled<BM_v5, BN_v5, BK_v5, TM_v5, TN_v5>
-  //     <<<grid_v5, block_v5>>>(
-  //       M, N, K, alpha, dA, dB, beta, dC);
-  // }
-  // cudaGetLastError();
-  // cudaDeviceSynchronize();
-  // auto end_v5 = std::chrono::high_resolution_clock::now();
-  // std::chrono::duration<double> elapsed_v5 = end_v5 - start_v5;
-  // double total_seconds_v5 = elapsed_v5.count();
-  // double avg_seconds_v5 = total_seconds_v5 / static_cast<double>(num_repeats);
-  // double gflops_v5 = flops / avg_seconds_v5 / 1.0e9;
-
-  // // std::cout << "-> BM = " << BM_v5 << ", BN = " << BN_v5
-  // //           << ", BK = " << BK_v5 << "\n";
-  // // std::cout << "-> TM = " << TM_v5 << ", TN = " << TN_v5 << "\n";
-  // std::cout << "-> Block: " << block_v5.x << " x " << block_v5.y << "\n";
-  // std::cout << "-> Grid:  " << grid_v5.x  << " x " << grid_v5.y  << "\n";
-  // if (check_gpu_results(M, N, dC, hC_comparison.data())) 
-  //     std::cout << "-> Results correct!" << std::endl;
-  // else
-  //     std::cout << "-> ERROR: Variant 5 faulty!" << std::endl;
-  // std::cout << "-> average runtime: " << avg_seconds_v5 * 1.0e3 << "ms\n";
-  // std::cout << "-> performance: " << gflops_v5 << " GLOP/s\n";
-  // std::cout << std::endl;
-
-  // ============================================================
-  // Variant 6 launch configuration
-  // ============================================================
-  std::cout << "Variant Benchmark 6: \n";
-  std::cout << "-> Description: WMMA\n";
-  experiment_parameters.utilized_implementation_id = 6;
-  kernel_fusion_benchmark(experiment_parameters, hA, hB, hC, hC_comparison, N, M, K);
-  std::cout << "Variant Benchmark 6 end \n" << std::endl;
-  // std::cout << "Variant 6: WMMA\n";
-  
-  // constexpr int BM_v6 = 64;
-  // constexpr int BN_v6 = 64;
-  // constexpr int BK_v6 = 16;
-
-  // if ((M % BM_v6) != 0 || (N % BN_v6) != 0 || (K % BK_v6) != 0) {
-  //   fprintf(stderr,
-  //           "dgemm_v5b_fp64_wmma_tiled requires "
-  //           "M %% 64 == 0, N %% 64 == 0, K %% 16 == 0\n");
-  //   return 0;
-  // }
-
-  // dim3 block_v6(512);
-  // dim3 grid_v6(N / BN_v6, M / BM_v6);
-
-  // auto start_v6 = std::chrono::high_resolution_clock::now();
-  // for (int repeat = 0; repeat < num_repeats; ++repeat) {
-  //   dgemm_v6_fp64_wmma_tiled<<<grid_v6,  block_v6>>>(
-  //     M, N, K, alpha, dA, dB, beta, dC);
-  // }
-  // cudaGetLastError();
-  // cudaDeviceSynchronize();
-  // auto end_v6 = std::chrono::high_resolution_clock::now();
-  // std::chrono::duration<double> elapsed_v6 = end_v6 - start_v6;
-  // double total_seconds_v6 = elapsed_v6.count();
-  // double avg_seconds_v6 = total_seconds_v6 / static_cast<double>(num_repeats);
-  // double gflops_v6 = flops / avg_seconds_v6 / 1.0e9;
-  // std::cout << "-> Block: " << block_v6.x << " x " << block_v6.y << "\n";
-  // std::cout << "-> Grid:  " << grid_v6.x  << " x " << grid_v6.y  << "\n";
-  // if (check_gpu_results(M, N, dC, hC_comparison.data())) 
-  //     std::cout << "-> Results correct!" << std::endl;
-  // else
-  //     std::cout << "-> ERROR: Variant 6 faulty!" << std::endl;
-  // std::cout << "-> average runtime: " << avg_seconds_v6 * 1.0e3 << "ms\n";
-  // std::cout << "-> performance: " << gflops_v6 << " GLOP/s\n";
-  // std::cout << std::endl;
-
-  // ============================================================
-  // Variant 7 launch configuration
-  // ============================================================
-  std::cout << "Variant Benchmark 7: \n";
-  std::cout << "-> Description: Better WMMA\n";
-  experiment_parameters.utilized_implementation_id = 7;
-  kernel_fusion_benchmark(experiment_parameters, hA, hB, hC, hC_comparison, N, M, K);
-  std::cout << "Variant Benchmark 7 end \n" << std::endl;
-  // std::cout << "Variant 7: Better WMMA\n";
-  // constexpr int BM_v7 = 64;
-  // constexpr int BN_v7 = 64;
-  // constexpr int BK_v7 = 16;
-
-  // if ((M % BM_v7) != 0 || (N % BN_v7) != 0 || (K % BK_v7) != 0) {
-  //   fprintf(stderr,
-  //           "dgemm_v7_fp64_wmma_64x64_8warps requires "
-  //           "M %% 64 == 0, N %% 64 == 0, K %% 16 == 0\n");
-  //   return 0;
-  // }
-
-  // dim3 block_v7(256);
-  // dim3 grid_v7(N / BN_v7, M / BM_v7);
-
-  // auto start_v7 = std::chrono::high_resolution_clock::now();
-  // for (int repeat = 0; repeat < num_repeats; ++repeat) {
-  // dgemm_v7_fp64_wmma_64x64_8warps<BM_v7, BN_v7, BK_v7>
-  //   <<<grid_v7, block_v7>>>(M, N, K, alpha, dA, dB, beta, dC);
-  // }
-  // cudaGetLastError();
-  // cudaDeviceSynchronize();
-  // auto end_v7 = std::chrono::high_resolution_clock::now();
-  // std::chrono::duration<double> elapsed_v7 = end_v7 - start_v7;
-  // double total_seconds_v7 = elapsed_v7.count();
-  // double avg_seconds_v7 = total_seconds_v7 / static_cast<double>(num_repeats);
-  // double gflops_v7 = flops / avg_seconds_v7 / 1.0e9;
-  // std::cout << "Block: " << block_v7.x << " x " << block_v7.y << "\n";
-  // std::cout << "Grid:  " << grid_v7.x  << " x " << grid_v7.y  << "\n";
-  // if (check_gpu_results(M, N, dC, hC_comparison.data())) 
-  //   std::cout << "-> Results correct!" << std::endl;
-  // else
-  //   std::cout << "-> ERROR: Variant 7 faulty!" << std::endl;
-  // std::cout << "-> average runtime: " << avg_seconds_v7 * 1.0e3 << "ms\n";
-  // std::cout << "-> performance: " << gflops_v7 << " GLOP/s\n";
-  // std::cout << std::endl;
-
-
-  std::cout << "Variant Benchmark cublas: \n";
-  std::cout << "-> Description: CUBLAS: \n";
-  experiment_parameters.utilized_implementation_id = 8;
-  kernel_fusion_benchmark(experiment_parameters, hA, hB, hC, hC_comparison, N, M, K);
-  std::cout << "Variant Benchmark cublas end \n" << std::endl;
-
-  //std::cout << "Variant CUBLAS: \n";
-  //cublasHandle_t handle;
-  //cublasCreate(&handle);
-  //cublasSetMathMode(handle, CUBLAS_TENSOR_OP_MATH);
-  //// Optional if you use a specific stream:
-  //// cudaStream_t stream;
-  //// CHECK_CUDA(cudaStreamCreate(&stream));
-  //// CHECK_CUBLAS(cublasSetStream(handle, stream));
-  ////cublasSetPointerMode(handle, CUBLAS_POINTER_MODE_HOST);
-  //// warmup
-  //cublasDgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N, N, M, K, &alpha, dB, N, dA, K, &beta, dC, N);
-  //cudaGetLastError();
-  //cudaDeviceSynchronize();
-  //auto start_cublas = std::chrono::high_resolution_clock::now();
-  //for (int repeat = 0; repeat < num_repeats; ++repeat) {
-  //  // A in cuBLAS sense: B_row interpreted as B^T
-  //  // B in cuBLAS sense: A_row interpreted as A^T
-  //  cublasDgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N, N, M, K, &alpha, dB, N, dA, K, &beta, dC, N);
-  //}
-  //cudaGetLastError();
-  //cudaDeviceSynchronize();
-  //auto end_cublas = std::chrono::high_resolution_clock::now();
-  //std::chrono::duration<double> elapsed_cublas = end_cublas - start_cublas;
-  //double total_seconds_cublas = elapsed_cublas.count();
-  //double avg_seconds_cublas = total_seconds_cublas / static_cast<double>(num_repeats);
-  //double gflops_cublas = flops / avg_seconds_cublas / 1.0e9;
-  //std::cout << "Variant CUBLAS: \n";
-  //if (check_gpu_results(M, N, dC, hC_comparison.data())) 
-  //  std::cout << "-> Results correct!" << std::endl;
-  //else
-  //  std::cout << "-> ERROR: Variant CUBLAS faulty!" << std::endl;
-  //std::cout << "-> average runtime: " << avg_seconds_cublas * 1.0e3 << "ms\n";
-  //std::cout << "-> performance: " << gflops_cublas << " GLOP/s\n";
-  //std::cout << std::endl;
 
   // ------------------------------------------------------------
   // Cleanup
