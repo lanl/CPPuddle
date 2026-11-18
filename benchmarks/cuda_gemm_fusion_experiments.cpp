@@ -89,6 +89,22 @@ R kernel_fusion_benchmark_iteration(const size_t utilized_implementation_id,
   //     }
   //   }
   // }
+  //
+  if (utilized_graph_mode == graph_mode::parallel) {
+    if (extra_graph_parameter > 1) {
+      if constexpr (!std::is_void_v<R>) {
+        // ret_fut = kernel_fut.then(
+        ret_fut = ret_fut.then(
+            [=, &handle, &hA, &hB, &hC, &hC_comparison](auto && fut) {
+          return kernel_fusion_benchmark_iteration<R>(utilized_implementation_id, alpha, beta, hA, hB, std::ref(hC),
+          dA, dB, dC, hC_comparison, M, N, K, std::ref(handle), utilized_graph_mode, extra_graph_parameter - 1, postprocessing_active);
+            });
+      } else {
+         kernel_fusion_benchmark_iteration<R>(utilized_implementation_id, alpha, beta, hA, hB, std::ref(hC),
+             dA, dB, dC, hC_comparison, M, N, K, std::ref(handle), utilized_graph_mode, extra_graph_parameter - 1, postprocessing_active);
+      }
+    }
+  }
 
   // if graph == bottom-up
   // Launch two more kernels -- wait until they're done (get), and only then launch this one)
@@ -111,19 +127,20 @@ R kernel_fusion_benchmark_iteration(const size_t utilized_implementation_id,
       hpx::cuda::experimental::cuda_executor>> exec{0};
   hpx::cuda::experimental::cuda_executor &underlying_exec = exec.operator hpx::cuda::experimental::cuda_executor&();
 
-  static const char aggregation_region_name[] = "gemm_aggregation_region";
-  constexpr size_t max_team_size = 1;
-  auto kernel_done_future = cppuddle::kernel_aggregation::aggregation_region<
-      aggregation_region_name, hpx::cuda::experimental::cuda_executor,
-      void>(max_team_size, [&, M, N, max_team_size](auto slice_id, auto number_slices,
-                                   auto &aggregation_executor) {
-          std::cout << "aggegration region entry" << std::endl;
-          auto alloc_device = aggregation_executor. template make_allocator<double, cppuddle::memory_recycling::recycle_allocator_cuda_device<double>>();
-          std::cout << "M: " << M << " N: " << N << " Max Team: " << max_team_size << std::endl;
-          cppuddle::memory_recycling::cuda_aggregated_device_buffer<double, decltype(alloc_device)> test_dC(M * N * max_team_size, alloc_device);
+  // static const char aggregation_region_name[] = "gemm_aggregation_region";
+  // constexpr size_t max_team_size = 4;
+  // auto kernel_done_future = cppuddle::kernel_aggregation::aggregation_region<
+  //     aggregation_region_name, hpx::cuda::experimental::cuda_executor,
+  //     void>(max_team_size, [&, M, N, max_team_size](auto slice_id, auto number_slices,
+  //                                  auto &aggregation_executor) {
+  //         std::cout << "aggegration region entry " << slice_id << std::endl;
+  //         auto alloc_device = aggregation_executor. template make_allocator<double, cppuddle::memory_recycling::recycle_allocator_cuda_device<double>>();
+  //         std::cout << "M: " << M << " N: " << N << " Max Team: " << max_team_size << std::endl;
+  //         cppuddle::memory_recycling::cuda_aggregated_device_buffer<double, decltype(alloc_device)> test_dC(M * N * max_team_size, alloc_device);
 
-          std::cout << "aggegration region exit" << std::endl;
-          });
+  //         std::cout << "aggegration region exit " << slice_id << std::endl;
+  //         });
+
 
 
   cppuddle::memory_recycling::cuda_device_buffer<double> dC_buffer(M * N);
@@ -421,8 +438,12 @@ R kernel_fusion_benchmark_iteration(const size_t utilized_implementation_id,
   //     ret_fut = hpx::when_all(fut1, fut2);
   //   }
   // }
-  if constexpr (!std::is_void_v<R>) 
-    return ret_fut;
+  if constexpr (!std::is_void_v<R>) {
+    if (utilized_graph_mode == graph_mode::parallel)
+      return hpx::when_all(ret_fut, kernel_fut);
+    else
+      return ret_fut;
+  }
 }
 
 void kernel_fusion_benchmark(const experiment_setup &experiment_parameters,
@@ -506,7 +527,7 @@ void kernel_fusion_benchmark(const experiment_setup &experiment_parameters,
   std::chrono::duration<double> elapsed = end_timer - start_timer;
   double total_seconds = elapsed.count();
   double avg_seconds = total_seconds / static_cast<double>(num_repetitions);
-  if (utilized_graph_mode == graph_mode::serial)
+  if (utilized_graph_mode == graph_mode::serial || utilized_graph_mode == graph_mode::parallel)
     avg_seconds = avg_seconds / static_cast<double>(extra_graph_parameter);
   double gflops = flops / avg_seconds / 1.0e9;
   std::cout << "-> Average Runtime: " << avg_seconds * 1.0e3 << "ms\n";
@@ -649,12 +670,13 @@ int hpx_main(int argc, char *argv[]) {
 
   experiment_setup experiment_parameters;
   // experiment_parameters.num_repetitions = 10;
- experiment_parameters.num_repetitions = 5;
+ experiment_parameters.num_repetitions = 10;
   experiment_parameters.utilized_implementation_id = 9;
   experiment_parameters.utilized_fusion_approach = fusion_mode::none;
-  experiment_parameters.utilized_graph_mode = graph_mode::serial;
-  experiment_parameters.extra_graph_parameter = 5;
-  experiment_parameters.postprocessing_active = true;
+  // experiment_parameters.utilized_graph_mode = graph_mode::serial;
+  experiment_parameters.utilized_graph_mode = graph_mode::parallel;
+  experiment_parameters.extra_graph_parameter = 100;
+  experiment_parameters.postprocessing_active = false;
   experiment_parameters.utilized_futurization_mode = futurization_mode::then;
   // experiment_parameters.utilized_futurization_mode = futurization_mode::none;
 
@@ -662,8 +684,8 @@ int hpx_main(int argc, char *argv[]) {
   hpx::cuda::experimental::detail::register_polling(hpx::resource::get_thread_pool(0));
   cppuddle::executor_recycling::executor_pool::init_executor_pool<hpx::cuda::experimental::cuda_executor,
     cppuddle::executor_recycling::round_robin_pool_impl<
-      // hpx::cuda::experimental::cuda_executor>>(0, 128, 0, true);
-      hpx::cuda::experimental::cuda_executor>>(0, 1, 0, true);
+      hpx::cuda::experimental::cuda_executor>>(0, 128, 0, true);
+      // hpx::cuda::experimental::cuda_executor>>(0, 1, 0, true);
 
   // ============================================================
   // CPU Comparison variant (datA)

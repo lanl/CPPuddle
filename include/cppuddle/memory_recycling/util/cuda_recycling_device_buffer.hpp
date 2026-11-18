@@ -7,7 +7,7 @@
 #define CUDA_RECYCLING_BUFFER_HPP
 
 // import recycle_allocator_cuda_device
-#include "cppuddle/memory_recycling/cuda_recycling_allocators.hpp""
+#include "cppuddle/memory_recycling/cuda_recycling_allocators.hpp"
 
 /// \file
 /// Contains a RAII wrappers for CUDA device buffers. Intended to be used with
