@@ -20,7 +20,10 @@
 #include "gemm_cpu_utils.hpp"
 #include "cuda_gemm_kernels.hpp"
 
-#include "cppuddle/executor_recycling/executor_pools_interface.hpp"
+#include <cppuddle/executor_recycling/executor_pools_interface.hpp>
+#include <cppuddle/memory_recycling/util/cuda_recycling_device_buffer.hpp>
+
+  
 
 // ------------------------------------------------------------
 // Computes:
@@ -59,7 +62,7 @@ template <typename R,
           typename = std::enable_if_t<is_void_or_future_void_v<R>>>
 R kernel_fusion_benchmark_iteration(const size_t utilized_implementation_id,
     double alpha, double beta, std::vector<double> &hA, std::vector<double> &hB,
-    std::vector<double> &hC, double *dA, double *dB, double *dC, const std::vector<double> &hC_comparison,
+    std::vector<double> &hC, const double *dA, const double *dB, double *dC, const std::vector<double> &hC_comparison,
     size_t M, size_t N, size_t K, cublasHandle_t &handle, const graph_mode utilized_graph_mode,
     const size_t extra_graph_parameter, const bool postprocessing_active) {
 
@@ -107,6 +110,10 @@ R kernel_fusion_benchmark_iteration(const size_t utilized_implementation_id,
       hpx::cuda::experimental::cuda_executor>> exec{0};
   hpx::cuda::experimental::cuda_executor &underlying_exec = exec.operator hpx::cuda::experimental::cuda_executor&();
 
+  cppuddle::memory_recycling::cuda_device_buffer<double> dC_buffer(M * N);
+  dC = dC_buffer.device_side_buffer;
+
+
   if (utilized_implementation_id == 0) {
     dim3 block(16, 16);
     dim3 grid(
@@ -117,13 +124,13 @@ R kernel_fusion_benchmark_iteration(const size_t utilized_implementation_id,
     // preprocessing?
     if constexpr (!std::is_void_v<R>) {
       if (postprocessing_active)
-        reset_C_gpu(M, N, dC, exec);
-      void *args[] = {&M, &N, &K, &alpha, &dA, &dB, &beta, &dC};
+        reset_C_gpu(M, N, dC_buffer.device_side_buffer, exec);
+      void *args[] = {&M, &N, &K, &alpha, &dA, &dB, &beta, &dC_buffer.device_side_buffer};
       kernel_fut = hpx::async(static_cast<hpx::cuda::experimental::cuda_executor>(exec),
           cudaLaunchKernel<decltype(dgemm_naive_unoptimized_v0)>, dgemm_naive_unoptimized_v0,  grid, block, args, 0);
       if (postprocessing_active) {
-        kernel_fut = kernel_fut.then([extra_graph_parameter, M, N, &dC, &hC_comparison, underlying_exec](auto && fut) {
-          if(!check_gpu_results(M, N, dC, hC_comparison.data(), underlying_exec)) {
+        kernel_fut = kernel_fut.then([extra_graph_parameter, M, N, dC_buffer, &hC_comparison, underlying_exec](auto && fut) {
+          if(!check_gpu_results(M, N, dC_buffer.device_side_buffer, hC_comparison.data(), underlying_exec)) {
                   std::cout << "-> ERROR: Variant 0 faulty!" << std::endl;
           } else {
                   std::cout << " =TEST_0 SUCCESS= ";

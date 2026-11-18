@@ -17,7 +17,7 @@
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
 
-#include "cppuddle/memory_recycling/detail/cuda_underlying_allocators.hpp"
+#include "cppuddle/memory_recycling/cuda_recycling_allocators.hpp"
 
 void dgemm_naive_cpu(int M, int N, int K, double alpha, const double* A,
                      const double* B, double beta, double* C) {
@@ -62,7 +62,8 @@ bool check_gpu_results(size_t M, size_t N, double *C_device_results, const doubl
     cudaError_t (*)(void*, int, std::size_t, cudaStream_t);
   auto* memset_async =
     static_cast<cuda_memset_async_type>(&cudaMemsetAsync);
-  std::vector<double, cppuddle::memory_recycling::detail::cuda_managed_memory_allocator<double>> c_host(M*N);
+  // std::vector<double, cppuddle::memory_recycling::detail::cuda_managed_memory_allocator<double>> c_host(M*N);
+  std::vector<double, cppuddle::memory_recycling::recycle_allocator_cuda_host<double>> c_host(M*N);
   auto memcpy_lambda =
     [](void* dst, void const* src, std::size_t size, cudaMemcpyKind kind, cudaStream_t stream) -> cudaError_t {
       // TODO this seems to work with hpx 1.11 and kokkos 4.4.01 but not with 1.9.1/4.2.01 -- why?
