@@ -18,11 +18,11 @@ namespace memory_recycling {
 
 /// Convienience struct to delete the device buffer once the reference counting
 /// reaches 0
-template<typename T, typename alloc_type>
+template<typename T>
 struct device_buffer_deleter_deleter {
-  alloc_type allocator;
+  recycle_allocator_cuda_device<T> allocator;
   size_t number_of_elements;
-  device_buffer_deleter_deleter(alloc_type &alloc, size_t number_of_elements) : allocator(alloc),
+  device_buffer_deleter_deleter(recycle_allocator_cuda_device<T> &alloc, size_t number_of_elements) : allocator(alloc),
     number_of_elements(number_of_elements) {}
   void operator()(T* p) {
     allocator.deallocate(p, number_of_elements);
@@ -40,7 +40,7 @@ struct cuda_device_buffer {
 
   cuda_device_buffer(const size_t number_of_elements, const size_t device_id = 0) 
       : allocator{device_id}, number_of_elements(number_of_elements), device_side_buffer(allocator.allocate(number_of_elements)),
-        data_ref_counter(device_side_buffer, device_buffer_deleter_deleter<T, recycle_allocator_cuda_device<T>>(allocator, number_of_elements)) {
+        data_ref_counter(device_side_buffer, device_buffer_deleter_deleter<T>(allocator, number_of_elements)) {
     assert(device_id < max_number_gpus);
   }
   ~cuda_device_buffer() = default;
@@ -56,18 +56,20 @@ struct cuda_device_buffer {
 template <typename T, typename Host_Allocator, std::enable_if_t<std::is_trivial<T>::value, int> = 0>
 struct cuda_aggregated_device_buffer {
   T *device_side_buffer;
-  std::shared_ptr<T> data_ref_counter;
   size_t number_of_elements;
   cuda_aggregated_device_buffer(size_t number_of_elements, Host_Allocator &alloc)
-      : number_of_elements(number_of_elements), alloc(alloc), device_side_buffer(alloc.allocate(number_of_elements)),  
-        data_ref_counter(device_side_buffer, device_buffer_deleter_deleter<T, Host_Allocator>(alloc, number_of_elements)) {
+      : number_of_elements(number_of_elements), alloc(alloc) {
+    device_side_buffer =
+        alloc.allocate(number_of_elements);
   }
-  ~cuda_aggregated_device_buffer() = default;
+  ~cuda_aggregated_device_buffer() {
+    alloc.deallocate(device_side_buffer, number_of_elements);
+  }
   // not yet implemented
-  explicit cuda_aggregated_device_buffer(cuda_aggregated_device_buffer const &other) = default;
-  cuda_aggregated_device_buffer& operator=(cuda_aggregated_device_buffer const &other) = default;
-  explicit cuda_aggregated_device_buffer(cuda_aggregated_device_buffer &&other) = default;
-  cuda_aggregated_device_buffer& operator=(cuda_aggregated_device_buffer &&other) = default;
+  cuda_aggregated_device_buffer(cuda_aggregated_device_buffer const &other) = delete;
+  cuda_aggregated_device_buffer operator=(cuda_aggregated_device_buffer const &other) = delete;
+  cuda_aggregated_device_buffer(cuda_aggregated_device_buffer const &&other) = delete;
+  cuda_aggregated_device_buffer operator=(cuda_aggregated_device_buffer const &&other) = delete;
 
 private:
   Host_Allocator &alloc; // will stay valid for the entire aggregation region and hence
