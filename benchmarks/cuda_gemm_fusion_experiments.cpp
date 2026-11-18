@@ -139,11 +139,11 @@ R kernel_fusion_benchmark_iteration(const size_t utilized_implementation_id,
       }
     } else {
       if (postprocessing_active)
-        reset_C_gpu(M, N, dC);
+        reset_C_gpu(M, N, dC_buffer.device_side_buffer);
       dgemm_naive_unoptimized_v0<<<grid, block>>>(
-          M, N, K, alpha, dA, dB, beta, dC);
+          M, N, K, alpha, dA, dB, beta, dC_buffer.device_side_buffer);
       // postprocessing
-      if (postprocessing_active && !check_gpu_results(M, N, dC, hC_comparison.data())) 
+      if (postprocessing_active && !check_gpu_results(M, N, dC_buffer.device_side_buffer, hC_comparison.data())) 
         std::cout << "-> ERROR: Variant 0 faulty!" << std::endl;
     }
   } else if (utilized_implementation_id == 1) {
@@ -154,13 +154,13 @@ R kernel_fusion_benchmark_iteration(const size_t utilized_implementation_id,
     );
     if constexpr (!std::is_void_v<R>) {
       if (postprocessing_active)
-        reset_C_gpu(M, N, dC, exec);
-      void *args[] = {&M, &N, &K, &alpha, &dA, &dB, &beta, &dC};
+        reset_C_gpu(M, N, dC_buffer.device_side_buffer, exec);
+      void *args[] = {&M, &N, &K, &alpha, &dA, &dB, &beta, &dC_buffer.device_side_buffer};
       kernel_fut = hpx::async(static_cast<hpx::cuda::experimental::cuda_executor>(exec),
           cudaLaunchKernel<decltype(dgemm_naive_v1)>, dgemm_naive_v1, grid, block, args, 0);
       if (postprocessing_active) {
-        kernel_fut = kernel_fut.then([extra_graph_parameter, M, N, &dC, &hC_comparison, underlying_exec](auto && fut) {
-          if(!check_gpu_results(M, N, dC, hC_comparison.data(), underlying_exec)) {
+        kernel_fut = kernel_fut.then([extra_graph_parameter, M, N, dC_buffer, &hC_comparison, underlying_exec](auto && fut) {
+          if(!check_gpu_results(M, N, dC_buffer.device_side_buffer, hC_comparison.data(), underlying_exec)) {
                   std::cout << "-> ERROR: Variant 1 faulty!" << std::endl;
           } else {
                   std::cout << " =TEST_1 SUCCESS= ";
@@ -169,10 +169,10 @@ R kernel_fusion_benchmark_iteration(const size_t utilized_implementation_id,
       }
     } else {
       if (postprocessing_active)
-        reset_C_gpu(M, N, dC);
+        reset_C_gpu(M, N, dC_buffer.device_side_buffer);
       dgemm_naive_v1<<<grid, block>>>(
-          M, N, K, alpha, dA, dB, beta, dC);
-      if (postprocessing_active && !check_gpu_results(M, N, dC, hC_comparison.data())) 
+          M, N, K, alpha, dA, dB, beta, dC_buffer.device_side_buffer);
+      if (postprocessing_active && !check_gpu_results(M, N, dC_buffer.device_side_buffer, hC_comparison.data())) 
         std::cout << "-> ERROR: Variant 1 faulty!" << std::endl;
     }
   } else if (utilized_implementation_id == 2) {
@@ -184,13 +184,13 @@ R kernel_fusion_benchmark_iteration(const size_t utilized_implementation_id,
     );
     if constexpr (!std::is_void_v<R>) {
       if (postprocessing_active)
-        reset_C_gpu(M, N, dC, exec);
-      void *args[] = {&M, &N, &K, &alpha, &dA, &dB, &beta, &dC};
+        reset_C_gpu(M, N, dC_buffer.device_side_buffer, exec);
+      void *args[] = {&M, &N, &K, &alpha, &dA, &dB, &beta, &dC_buffer.device_side_buffer};
       kernel_fut = hpx::async(static_cast<hpx::cuda::experimental::cuda_executor>(exec),
           cudaLaunchKernel<decltype(dgemm_shared_tiled_v2<TILE>)>, dgemm_shared_tiled_v2<TILE>, grid, block, args, 0);
       if (postprocessing_active) {
-        kernel_fut = kernel_fut.then([extra_graph_parameter, M, N, &dC, &hC_comparison, underlying_exec](auto && fut) {
-          if(!check_gpu_results(M, N, dC, hC_comparison.data(), underlying_exec)) {
+        kernel_fut = kernel_fut.then([extra_graph_parameter, M, N, dC_buffer, &hC_comparison, underlying_exec](auto && fut) {
+          if(!check_gpu_results(M, N, dC_buffer.device_side_buffer, hC_comparison.data(), underlying_exec)) {
                   std::cout << "-> ERROR: Variant 2 faulty!" << std::endl;
           } else {
                   std::cout << " =TEST_2 SUCCESS= ";
@@ -199,10 +199,10 @@ R kernel_fusion_benchmark_iteration(const size_t utilized_implementation_id,
       }
     } else {
       if (postprocessing_active)
-        reset_C_gpu(M, N, dC);
+        reset_C_gpu(M, N, dC_buffer.device_side_buffer);
       dgemm_shared_tiled_v2<TILE><<<grid, block>>>(
-        M, N, K, alpha, dA, dB, beta, dC);
-      if (postprocessing_active && !check_gpu_results(M, N, dC, hC_comparison.data())) 
+        M, N, K, alpha, dA, dB, beta, dC_buffer.device_side_buffer);
+      if (postprocessing_active && !check_gpu_results(M, N, dC_buffer.device_side_buffer, hC_comparison.data())) 
         std::cout << "-> ERROR: Variant 2 faulty!" << std::endl;
     }
   } else if (utilized_implementation_id == 3) {
@@ -213,13 +213,13 @@ R kernel_fusion_benchmark_iteration(const size_t utilized_implementation_id,
     dim3 grid((N + BN - 1) / BN, (M + BM - 1) / BM);
     if constexpr (!std::is_void_v<R>) {
       if (postprocessing_active)
-        reset_C_gpu(M, N, dC, exec);
-      void *args[] = {&M, &N, &K, &alpha, &dA, &dB, &beta, &dC};
+        reset_C_gpu(M, N, dC_buffer.device_side_buffer, exec);
+      void *args[] = {&M, &N, &K, &alpha, &dA, &dB, &beta, &dC_buffer.device_side_buffer};
       kernel_fut = hpx::async(static_cast<hpx::cuda::experimental::cuda_executor>(exec),
           cudaLaunchKernel<decltype(dgemm_register_tiled_v3<BM, BN, BK, TM, TN>)>, dgemm_register_tiled_v3<BM, BN, BK, TM, TN>, grid, block, args, 0);
       if (postprocessing_active) {
-        kernel_fut = kernel_fut.then([extra_graph_parameter, M, N, &dC, &hC_comparison, underlying_exec](auto && fut) {
-          if(!check_gpu_results(M, N, dC, hC_comparison.data(), underlying_exec)) {
+        kernel_fut = kernel_fut.then([extra_graph_parameter, M, N, dC_buffer, &hC_comparison, underlying_exec](auto && fut) {
+          if(!check_gpu_results(M, N, dC_buffer.device_side_buffer, hC_comparison.data(), underlying_exec)) {
                   std::cout << "-> ERROR: Variant 3 faulty!" << std::endl;
           } else {
                   std::cout << " =TEST_3 SUCCESS= ";
@@ -228,10 +228,10 @@ R kernel_fusion_benchmark_iteration(const size_t utilized_implementation_id,
       }
     } else {
       if (postprocessing_active)
-        reset_C_gpu(M, N, dC);
+        reset_C_gpu(M, N, dC_buffer.device_side_buffer);
       dgemm_register_tiled_v3<BM, BN, BK, TM, TN><<<grid, block>>>(
-        M, N, K, alpha, dA, dB, beta, dC);
-      if (postprocessing_active && !check_gpu_results(M, N, dC, hC_comparison.data())) 
+        M, N, K, alpha, dA, dB, beta, dC_buffer.device_side_buffer);
+      if (postprocessing_active && !check_gpu_results(M, N, dC_buffer.device_side_buffer, hC_comparison.data())) 
         std::cout << "-> ERROR: Variant 3 faulty!" << std::endl;
     }
   } else if (utilized_implementation_id == 4) {
@@ -243,13 +243,13 @@ R kernel_fusion_benchmark_iteration(const size_t utilized_implementation_id,
     );
     if constexpr (!std::is_void_v<R>) {
       if (postprocessing_active)
-        reset_C_gpu(M, N, dC, exec);
-      void *args[] = {&M, &N, &K, &alpha, &dA, &dB, &beta, &dC};
+        reset_C_gpu(M, N, dC_buffer.device_side_buffer, exec);
+      void *args[] = {&M, &N, &K, &alpha, &dA, &dB, &beta, &dC_buffer.device_side_buffer};
       kernel_fut = hpx::async(static_cast<hpx::cuda::experimental::cuda_executor>(exec),
           cudaLaunchKernel<decltype(dgemm_v4_shared_register_tiled<BM, BN, BK, TM, TN>)>, dgemm_v4_shared_register_tiled<BM, BN, BK, TM, TN>, grid, block, args, 0);
       if (postprocessing_active) {
-        kernel_fut = kernel_fut.then([extra_graph_parameter, M, N, &dC, &hC_comparison, underlying_exec](auto && fut) {
-          if(!check_gpu_results(M, N, dC, hC_comparison.data(), underlying_exec)) {
+        kernel_fut = kernel_fut.then([extra_graph_parameter, M, N, dC_buffer, &hC_comparison, underlying_exec](auto && fut) {
+          if(!check_gpu_results(M, N, dC_buffer.device_side_buffer, hC_comparison.data(), underlying_exec)) {
                   std::cout << "-> ERROR: Variant 4 faulty!" << std::endl;
           } else {
                   std::cout << " =TEST_4 SUCCESS= ";
@@ -258,11 +258,11 @@ R kernel_fusion_benchmark_iteration(const size_t utilized_implementation_id,
       }
     } else {
       if (postprocessing_active)
-        reset_C_gpu(M, N, dC);
+        reset_C_gpu(M, N, dC_buffer.device_side_buffer);
       dgemm_v4_shared_register_tiled<BM, BN, BK, TM, TN>
         <<<grid, block>>>(
-          M, N, K, alpha, dA, dB, beta, dC);
-      if (postprocessing_active && !check_gpu_results(M, N, dC, hC_comparison.data())) 
+          M, N, K, alpha, dA, dB, beta, dC_buffer.device_side_buffer);
+      if (postprocessing_active && !check_gpu_results(M, N, dC_buffer.device_side_buffer, hC_comparison.data())) 
         std::cout << "-> ERROR: Variant 4 faulty!" << std::endl;
     }
   } else if (utilized_implementation_id == 5) {
@@ -271,13 +271,13 @@ R kernel_fusion_benchmark_iteration(const size_t utilized_implementation_id,
     dim3 grid((N + BN - 1) / BN, (M + BM - 1) / BM);
     if constexpr (!std::is_void_v<R>) {
       if (postprocessing_active)
-        reset_C_gpu(M, N, dC, exec);
-      void *args[] = {&M, &N, &K, &alpha, &dA, &dB, &beta, &dC};
+        reset_C_gpu(M, N, dC_buffer.device_side_buffer, exec);
+      void *args[] = {&M, &N, &K, &alpha, &dA, &dB, &beta, &dC_buffer.device_side_buffer};
       kernel_fut = hpx::async(static_cast<hpx::cuda::experimental::cuda_executor>(exec),
           cudaLaunchKernel<decltype(dgemm_v5_vectorized_register_tiled<BM, BN, BK, TM, TN>)>, dgemm_v5_vectorized_register_tiled<BM, BN, BK, TM, TN>, grid, block, args, 0);
       if (postprocessing_active) {
-        kernel_fut = kernel_fut.then([extra_graph_parameter, M, N, &dC, &hC_comparison, underlying_exec](auto && fut) {
-          if(!check_gpu_results(M, N, dC, hC_comparison.data(), underlying_exec)) {
+        kernel_fut = kernel_fut.then([extra_graph_parameter, M, N, dC_buffer, &hC_comparison, underlying_exec](auto && fut) {
+          if(!check_gpu_results(M, N, dC_buffer.device_side_buffer, hC_comparison.data(), underlying_exec)) {
                   std::cout << "-> ERROR: Variant 5 faulty!" << std::endl;
           } else {
                   std::cout << " =TEST_5 SUCCESS= ";
@@ -286,11 +286,11 @@ R kernel_fusion_benchmark_iteration(const size_t utilized_implementation_id,
       }
     } else {
       if (postprocessing_active)
-        reset_C_gpu(M, N, dC);
+        reset_C_gpu(M, N, dC_buffer.device_side_buffer);
       dgemm_v5_vectorized_register_tiled<BM, BN, BK, TM, TN>
         <<<grid, block>>>(
-        M, N, K, alpha, dA, dB, beta, dC);
-      if (postprocessing_active && !check_gpu_results(M, N, dC, hC_comparison.data())) 
+        M, N, K, alpha, dA, dB, beta, dC_buffer.device_side_buffer);
+      if (postprocessing_active && !check_gpu_results(M, N, dC_buffer.device_side_buffer, hC_comparison.data())) 
         std::cout << "-> ERROR: Variant 5 faulty!" << std::endl;
     }
   } else if (utilized_implementation_id == 6) {
@@ -305,13 +305,13 @@ R kernel_fusion_benchmark_iteration(const size_t utilized_implementation_id,
     dim3 grid(N / BN, M / BM);
     if constexpr (!std::is_void_v<R>) {
       if (postprocessing_active)
-        reset_C_gpu(M, N, dC, exec);
-      void *args[] = {&M, &N, &K, &alpha, &dA, &dB, &beta, &dC};
+        reset_C_gpu(M, N, dC_buffer.device_side_buffer, exec);
+      void *args[] = {&M, &N, &K, &alpha, &dA, &dB, &beta, &dC_buffer.device_side_buffer};
       kernel_fut = hpx::async(static_cast<hpx::cuda::experimental::cuda_executor>(exec),
           cudaLaunchKernel<decltype(dgemm_v6_fp64_wmma_tiled<BM, BN, BK>)>, dgemm_v6_fp64_wmma_tiled<BM, BN, BK>, grid, block, args, 0);
       if (postprocessing_active) {
-        kernel_fut = kernel_fut.then([extra_graph_parameter, M, N, &dC, &hC_comparison, underlying_exec](auto && fut) {
-          if(!check_gpu_results(M, N, dC, hC_comparison.data(), underlying_exec)) {
+        kernel_fut = kernel_fut.then([extra_graph_parameter, M, N, dC_buffer, &hC_comparison, underlying_exec](auto && fut) {
+          if(!check_gpu_results(M, N, dC_buffer.device_side_buffer, hC_comparison.data(), underlying_exec)) {
                   std::cout << "-> ERROR: Variant 6 faulty!" << std::endl;
           } else {
                   std::cout << " =TEST_6 SUCCESS= ";
@@ -320,10 +320,10 @@ R kernel_fusion_benchmark_iteration(const size_t utilized_implementation_id,
       }
     } else {
       if (postprocessing_active)
-        reset_C_gpu(M, N, dC);
+        reset_C_gpu(M, N, dC_buffer.device_side_buffer);
       dgemm_v6_fp64_wmma_tiled<BM, BN, BK><<<grid,  block>>>(
-        M, N, K, alpha, dA, dB, beta, dC);
-      if (postprocessing_active && !check_gpu_results(M, N, dC, hC_comparison.data())) 
+        M, N, K, alpha, dA, dB, beta, dC_buffer.device_side_buffer);
+      if (postprocessing_active && !check_gpu_results(M, N, dC_buffer.device_side_buffer, hC_comparison.data())) 
         std::cout << "-> ERROR: Variant 6 faulty!" << std::endl;
     }
   } else if (utilized_implementation_id == 7) {
@@ -338,13 +338,13 @@ R kernel_fusion_benchmark_iteration(const size_t utilized_implementation_id,
     dim3 grid(N / BN, M / BM);
     if constexpr (!std::is_void_v<R>) {
       if (postprocessing_active)
-        reset_C_gpu(M, N, dC, exec);
-      void *args[] = {&M, &N, &K, &alpha, &dA, &dB, &beta, &dC};
+        reset_C_gpu(M, N, dC_buffer.device_side_buffer, exec);
+      void *args[] = {&M, &N, &K, &alpha, &dA, &dB, &beta, &dC_buffer.device_side_buffer};
       kernel_fut = hpx::async(static_cast<hpx::cuda::experimental::cuda_executor>(exec),
           cudaLaunchKernel<decltype(dgemm_v7_fp64_wmma_64x64_8warps<BM, BN, BK>)>, dgemm_v7_fp64_wmma_64x64_8warps<BM, BN, BK>, grid, block, args, 0);
       if (postprocessing_active) {
-        kernel_fut = kernel_fut.then([extra_graph_parameter, M, N, &dC, &hC_comparison, underlying_exec](auto && fut) {
-          if(!check_gpu_results(M, N, dC, hC_comparison.data(), underlying_exec)) {
+        kernel_fut = kernel_fut.then([extra_graph_parameter, M, N, dC_buffer, &hC_comparison, underlying_exec](auto && fut) {
+          if(!check_gpu_results(M, N, dC_buffer.device_side_buffer, hC_comparison.data(), underlying_exec)) {
                   std::cout << "-> ERROR: Variant 7 faulty!" << std::endl;
           } else {
                   std::cout << " =TEST_7 SUCCESS= ";
@@ -353,18 +353,18 @@ R kernel_fusion_benchmark_iteration(const size_t utilized_implementation_id,
       }
     } else {
       if (postprocessing_active)
-        reset_C_gpu(M, N, dC);
+        reset_C_gpu(M, N, dC_buffer.device_side_buffer);
       dgemm_v7_fp64_wmma_64x64_8warps<BM, BN, BK>
-        <<<grid, block>>>(M, N, K, alpha, dA, dB, beta, dC);
-      if (postprocessing_active && !check_gpu_results(M, N, dC, hC_comparison.data())) 
+        <<<grid, block>>>(M, N, K, alpha, dA, dB, beta, dC_buffer.device_side_buffer);
+      if (postprocessing_active && !check_gpu_results(M, N, dC_buffer.device_side_buffer, hC_comparison.data())) 
         std::cout << "-> ERROR: Variant 7 faulty!" << std::endl;
     }
   } else if (utilized_implementation_id == 8) {  // CUBLAS version
     if (postprocessing_active)
-      reset_C_gpu(M, N, dC);
+      reset_C_gpu(M, N, dC_buffer.device_side_buffer);
     // hpx::post(static_cast<hpx::cuda::experimental::cuda_executor>(exec), cublasSetStream, handle);
-    cublasDgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N, N, M, K, &alpha, dB, N, dA, K, &beta, dC, N);
-    if (postprocessing_active && !check_gpu_results(M, N, dC, hC_comparison.data())) 
+    cublasDgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N, N, M, K, &alpha, dB, N, dA, K, &beta, dC_buffer.device_side_buffer, N);
+    if (postprocessing_active && !check_gpu_results(M, N, dC_buffer.device_side_buffer, hC_comparison.data())) 
       std::cout << "-> ERROR: Variant CUBLAS faulty!" << std::endl;
   } else if (utilized_implementation_id == 9) { // CPU version
     reset_C_cpu(M, N, hC.data());
