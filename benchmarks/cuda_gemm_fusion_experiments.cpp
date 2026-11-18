@@ -23,6 +23,7 @@
 #include <cppuddle/executor_recycling/executor_pools_interface.hpp>
 #include <cppuddle/memory_recycling/util/cuda_recycling_device_buffer.hpp>
 
+#include <cppuddle/kernel_aggregation/kernel_aggregation_interface.hpp>
   
 
 // ------------------------------------------------------------
@@ -109,6 +110,21 @@ R kernel_fusion_benchmark_iteration(const size_t utilized_implementation_id,
     cppuddle::executor_recycling::round_robin_pool_impl<
       hpx::cuda::experimental::cuda_executor>> exec{0};
   hpx::cuda::experimental::cuda_executor &underlying_exec = exec.operator hpx::cuda::experimental::cuda_executor&();
+
+  static const char aggregation_region_name[] = "gemm_aggregation_region";
+  constexpr size_t max_team_size = 1;
+  auto kernel_done_future = cppuddle::kernel_aggregation::aggregation_region<
+      aggregation_region_name, hpx::cuda::experimental::cuda_executor,
+      void>(max_team_size, [&, M, N, max_team_size](auto slice_id, auto number_slices,
+                                   auto &aggregation_executor) {
+          std::cout << "aggegration region entry" << std::endl;
+          auto alloc_device = aggregation_executor. template make_allocator<double, cppuddle::memory_recycling::recycle_allocator_cuda_device<double>>();
+          std::cout << "M: " << M << " N: " << N << " Max Team: " << max_team_size << std::endl;
+          cppuddle::memory_recycling::cuda_aggregated_device_buffer<double, decltype(alloc_device)> test_dC(M * N * max_team_size, alloc_device);
+
+          std::cout << "aggegration region exit" << std::endl;
+          });
+
 
   cppuddle::memory_recycling::cuda_device_buffer<double> dC_buffer(M * N);
   dC = dC_buffer.device_side_buffer;
