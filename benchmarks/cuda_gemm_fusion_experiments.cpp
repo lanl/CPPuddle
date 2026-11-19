@@ -147,21 +147,22 @@ R kernel_fusion_benchmark_iteration(const size_t utilized_implementation_id,
               // start_timer = std::chrono::high_resolution_clock::now();
               // preprocessing?
               if constexpr (!std::is_void_v<R>) {
+                // WIP
                 // if (postprocessing_active)
                 //   reset_C_gpu(M, N * max_team_size, aggregated_dC_buffer.device_side_buffer, aggregation_executor);
                 void *args[] = {&M, &N, &K, &alpha, &dA, &dB, &beta, &aggregated_dC_buffer.device_side_buffer};
                 auto internal_fut = hpx::async(aggregation_executor,
                     cudaLaunchKernel<decltype(dgemm_naive_unoptimized_v0)>, dgemm_naive_unoptimized_v0,  grid, block, args, 0);
-
-                // if (postprocessing_active) {
-                //   kernel_fut = kernel_fut.then([extra_graph_parameter, M, N, aggregated_dC_buffer, &hC_comparison, underlying_exec](auto && fut) {
-                //     if(!check_gpu_results(M, N, aggregated_dC_buffer.device_side_buffer, hC_comparison.data(), underlying_exec)) {
-                //             std::cout << "-> ERROR: Variant 0 faulty!" << std::endl;
-                //     } else {
-                //             std::cout << " =TEST_0 SUCCESS= ";
-                //     }
-                //   });
                 internal_fut.get();
+
+                // WIP:
+                if (postprocessing_active) {
+                    if(!check_gpu_results(M, N, aggregated_dC_buffer.device_side_buffer + slice_id * M * N, hC_comparison.data(), underlying_exec)) {
+                            std::cout << "-> ERROR: Variant 0 faulty!" << std::endl;
+                    } else {
+                            std::cout << " =TEST_0 SUCCESS= ";
+                    }
+                  });
                 }
             }
             });
