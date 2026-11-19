@@ -65,7 +65,7 @@ R kernel_fusion_benchmark_iteration(const size_t utilized_implementation_id,
     double alpha, double beta, std::vector<double> &hA, std::vector<double> &hB,
     std::vector<double> &hC, const double *dA, const double *dB, double *dC, const std::vector<double> &hC_comparison,
     size_t M, size_t N, size_t K, cublasHandle_t &handle, const graph_mode utilized_graph_mode,
-    const size_t extra_graph_parameter, const bool postprocessing_active) {
+    const size_t extra_graph_parameter, const bool postprocessing_active, const fusion_mode utilized_fusion_mode) {
 
   // auto policy = hpx::launch::async_policy(hpx::threads::thread_priority::default_, 
   //                           hpx::threads::thread_stacksize::large);
@@ -97,11 +97,11 @@ R kernel_fusion_benchmark_iteration(const size_t utilized_implementation_id,
         ret_fut = ret_fut.then(
             [=, &handle, &hA, &hB, &hC, &hC_comparison](auto && fut) {
           return kernel_fusion_benchmark_iteration<R>(utilized_implementation_id, alpha, beta, hA, hB, std::ref(hC),
-          dA, dB, dC, hC_comparison, M, N, K, std::ref(handle), utilized_graph_mode, extra_graph_parameter - 1, postprocessing_active);
+          dA, dB, dC, hC_comparison, M, N, K, std::ref(handle), utilized_graph_mode, extra_graph_parameter - 1, postprocessing_active, utilized_fusion_mode);
             });
       } else {
          kernel_fusion_benchmark_iteration<R>(utilized_implementation_id, alpha, beta, hA, hB, std::ref(hC),
-             dA, dB, dC, hC_comparison, M, N, K, std::ref(handle), utilized_graph_mode, extra_graph_parameter - 1, postprocessing_active);
+             dA, dB, dC, hC_comparison, M, N, K, std::ref(handle), utilized_graph_mode, extra_graph_parameter - 1, postprocessing_active, utilized_fusion_mode);
       }
     }
   }
@@ -120,33 +120,65 @@ R kernel_fusion_benchmark_iteration(const size_t utilized_implementation_id,
   // }
 
   result_t kernel_fut;
-  if constexpr (!std::is_void_v<R>)
+  if constexpr (!std::is_void_v<R>) {
     kernel_fut = hpx::make_ready_future<void>();
+    // std::cerr << "ping" << extra_graph_parameter << " ";
+    // return kernel_fut;
+  }
+
+  if (utilized_fusion_mode == fusion_mode::cppuddle) {
+  if constexpr (!std::is_void_v<R>) {
+    static const char aggregation_region_name[] = "gemm_aggregation_region";
+    size_t max_team_size = 8;
+    kernel_fut = cppuddle::kernel_aggregation::aggregation_region<
+        aggregation_region_name, hpx::cuda::experimental::cuda_executor,
+        void>(max_team_size, [&, dA, dB, alpha, beta, M, N, K, max_team_size](auto slice_id, auto number_slices,
+                                     auto &aggregation_executor) mutable {
+
+            auto alloc_device = aggregation_executor. template make_allocator<double, cppuddle::memory_recycling::recycle_allocator_cuda_device<double>>();
+            cppuddle::memory_recycling::cuda_aggregated_device_buffer<double, decltype(alloc_device)> aggregated_dC_buffer(M * N * max_team_size, alloc_device);
+
+            if (utilized_implementation_id == 0) {
+              dim3 block(16, 16, number_slices);
+              dim3 grid(
+                  (N + block.x - 1) / block.x,
+                  (M + block.y - 1) / block.y
+              );
+              // start_timer = std::chrono::high_resolution_clock::now();
+              // preprocessing?
+              if constexpr (!std::is_void_v<R>) {
+                // if (postprocessing_active)
+                //   reset_C_gpu(M, N * max_team_size, aggregated_dC_buffer.device_side_buffer, aggregation_executor);
+                void *args[] = {&M, &N, &K, &alpha, &dA, &dB, &beta, &aggregated_dC_buffer.device_side_buffer};
+                auto internal_fut = hpx::async(aggregation_executor,
+                    cudaLaunchKernel<decltype(dgemm_naive_unoptimized_v0)>, dgemm_naive_unoptimized_v0,  grid, block, args, 0);
+
+                // if (postprocessing_active) {
+                //   kernel_fut = kernel_fut.then([extra_graph_parameter, M, N, aggregated_dC_buffer, &hC_comparison, underlying_exec](auto && fut) {
+                //     if(!check_gpu_results(M, N, aggregated_dC_buffer.device_side_buffer, hC_comparison.data(), underlying_exec)) {
+                //             std::cout << "-> ERROR: Variant 0 faulty!" << std::endl;
+                //     } else {
+                //             std::cout << " =TEST_0 SUCCESS= ";
+                //     }
+                //   });
+                internal_fut.get();
+                }
+            }
+            });
+    }
+  } else {
+
   cppuddle::executor_recycling::executor_interface<hpx::cuda::experimental::cuda_executor,
     cppuddle::executor_recycling::round_robin_pool_impl<
       hpx::cuda::experimental::cuda_executor>> exec{0};
   hpx::cuda::experimental::cuda_executor &underlying_exec = exec.operator hpx::cuda::experimental::cuda_executor&();
 
-  // static const char aggregation_region_name[] = "gemm_aggregation_region";
-  // constexpr size_t max_team_size = 4;
-  // auto kernel_done_future = cppuddle::kernel_aggregation::aggregation_region<
-  //     aggregation_region_name, hpx::cuda::experimental::cuda_executor,
-  //     void>(max_team_size, [&, M, N, max_team_size](auto slice_id, auto number_slices,
-  //                                  auto &aggregation_executor) {
-  //         std::cout << "aggegration region entry " << slice_id << std::endl;
-  //         auto alloc_device = aggregation_executor. template make_allocator<double, cppuddle::memory_recycling::recycle_allocator_cuda_device<double>>();
-  //         std::cout << "M: " << M << " N: " << N << " Max Team: " << max_team_size << std::endl;
-  //         cppuddle::memory_recycling::cuda_aggregated_device_buffer<double, decltype(alloc_device)> test_dC(M * N * max_team_size, alloc_device);
-
-  //         std::cout << "aggegration region exit " << slice_id << std::endl;
-  //         });
-
-
-
   cppuddle::memory_recycling::cuda_device_buffer<double> dC_buffer(M * N);
   dC = dC_buffer.device_side_buffer;
 
 
+  size_t max_team_size = 1;
+  size_t slice_id = 0;
   if (utilized_implementation_id == 0) {
     dim3 block(16, 16);
     dim3 grid(
@@ -416,17 +448,19 @@ R kernel_fusion_benchmark_iteration(const size_t utilized_implementation_id,
         ret_fut = kernel_fut.then(
             [=, &handle, &hA, &hB, &hC, &hC_comparison](auto && fut) {
           return kernel_fusion_benchmark_iteration<R>(utilized_implementation_id, alpha, beta, hA, hB, std::ref(hC),
-          dA, dB, dC, hC_comparison, M, N, K, std::ref(handle), utilized_graph_mode, extra_graph_parameter - 1, postprocessing_active);
+          dA, dB, dC, hC_comparison, M, N, K, std::ref(handle), utilized_graph_mode, extra_graph_parameter - 1, postprocessing_active, utilized_fusion_mode);
             });
       } else {
          kernel_fusion_benchmark_iteration<R>(utilized_implementation_id, alpha, beta, hA, hB, std::ref(hC),
-             dA, dB, dC, hC_comparison, M, N, K, std::ref(handle), utilized_graph_mode, extra_graph_parameter - 1, postprocessing_active);
+             dA, dB, dC, hC_comparison, M, N, K, std::ref(handle), utilized_graph_mode, extra_graph_parameter - 1, postprocessing_active, utilized_fusion_mode);
       }
     } else {
       if constexpr (!std::is_void_v<R>) {
+        // std::cerr << "ser" << extra_graph_parameter << " ";
         return kernel_fut;
       }
     }
+  }
   }
   
   // if (utilized_graph_mode == graph_mode::top_down) {
@@ -439,10 +473,13 @@ R kernel_fusion_benchmark_iteration(const size_t utilized_implementation_id,
   //   }
   // }
   if constexpr (!std::is_void_v<R>) {
-    if (utilized_graph_mode == graph_mode::parallel)
+    if (utilized_graph_mode == graph_mode::parallel) {
+      // std::cerr << "par" << extra_graph_parameter << " ";
       return hpx::when_all(ret_fut, kernel_fut);
-    else
+    } else {
+      // std::cerr << "ser" << extra_graph_parameter << " ";
       return ret_fut;
+    }
   }
 }
 
@@ -484,8 +521,9 @@ void kernel_fusion_benchmark(const experiment_setup &experiment_parameters,
   cublasCreate(&handle);
   cublasSetMathMode(handle, CUBLAS_TENSOR_OP_MATH);
   cublasDgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N, N, M, K, &alpha, dB, N, dA, K, &beta, dC, N); // first pass required -- I think there is some setup happening
+  cudaGetLastError();
+  cudaDeviceSynchronize();
 
-  std::chrono::time_point start_timer = std::chrono::high_resolution_clock::now();
   // setup cuda graph
   // setup executor pool
   // setup multiple cuda streams
@@ -493,6 +531,7 @@ void kernel_fusion_benchmark(const experiment_setup &experiment_parameters,
   // repeat experiment n times (otherwise the cuda graphs will lose badly)
   // ... needs separate methods (cannot extend the recursion over the loop
 
+  std::chrono::time_point start_timer = std::chrono::high_resolution_clock::now();
   if (utilized_futurization_mode == futurization_mode::then) {
     auto loop_fut = hpx::make_ready_future<void>();
     for (size_t it = 0; it < num_repetitions; it++) {
@@ -500,7 +539,7 @@ void kernel_fusion_benchmark(const experiment_setup &experiment_parameters,
           [&](auto && fut) {
           // fut.get();
           return kernel_fusion_benchmark_iteration<hpx::future<void>>(utilized_implementation_id, alpha, beta, hA, hB, std::ref(hC),
-          dA, dB, dC, hC_comparison, M, N, K, std::ref(handle), utilized_graph_mode, extra_graph_parameter, postprocessing_active);
+          dA, dB, dC, hC_comparison, M, N, K, std::ref(handle), utilized_graph_mode, extra_graph_parameter, postprocessing_active, utilized_fusion_approach);
           });
       // loop_fut = hpx::dataflow([&](auto void_val) {
       //     kernel_fusion_benchmark_iteration(utilized_implementation_id, alpha, beta, hA, hB, std::ref(hC),
@@ -515,7 +554,7 @@ void kernel_fusion_benchmark(const experiment_setup &experiment_parameters,
   } else {
     for (size_t it = 0; it < num_repetitions; it++) {
       kernel_fusion_benchmark_iteration<void>(utilized_implementation_id, alpha, beta, hA, hB, std::ref(hC),
-          dA, dB, dC, hC_comparison, M, N, K, std::ref(handle), utilized_graph_mode, extra_graph_parameter, postprocessing_active);
+          dA, dB, dC, hC_comparison, M, N, K, std::ref(handle), utilized_graph_mode, extra_graph_parameter, postprocessing_active, utilized_fusion_approach);
     }
   }
   cudaGetLastError();
@@ -527,8 +566,9 @@ void kernel_fusion_benchmark(const experiment_setup &experiment_parameters,
   std::chrono::duration<double> elapsed = end_timer - start_timer;
   double total_seconds = elapsed.count();
   double avg_seconds = total_seconds / static_cast<double>(num_repetitions);
-  if (utilized_graph_mode == graph_mode::serial || utilized_graph_mode == graph_mode::parallel)
+  if (utilized_graph_mode == graph_mode::serial || utilized_graph_mode == graph_mode::parallel) {
     avg_seconds = avg_seconds / static_cast<double>(extra_graph_parameter);
+  }
   double gflops = flops / avg_seconds / 1.0e9;
   std::cout << "-> Average Runtime: " << avg_seconds * 1.0e3 << "ms\n";
   std::cout << "-> Performance: " << gflops << " GFLOP/s";
@@ -670,12 +710,11 @@ int hpx_main(int argc, char *argv[]) {
 
   experiment_setup experiment_parameters;
   // experiment_parameters.num_repetitions = 10;
- experiment_parameters.num_repetitions = 10;
   experiment_parameters.utilized_implementation_id = 9;
-  experiment_parameters.utilized_fusion_approach = fusion_mode::none;
+  // experiment_parameters.utilized_fusion_approach = fusion_mode::none;
+  experiment_parameters.utilized_fusion_approach = fusion_mode::cppuddle;
   // experiment_parameters.utilized_graph_mode = graph_mode::serial;
   experiment_parameters.utilized_graph_mode = graph_mode::parallel;
-  experiment_parameters.extra_graph_parameter = 100;
   experiment_parameters.postprocessing_active = false;
   experiment_parameters.utilized_futurization_mode = futurization_mode::then;
   // experiment_parameters.utilized_futurization_mode = futurization_mode::none;
@@ -684,9 +723,19 @@ int hpx_main(int argc, char *argv[]) {
   hpx::cuda::experimental::detail::register_polling(hpx::resource::get_thread_pool(0));
   cppuddle::executor_recycling::executor_pool::init_executor_pool<hpx::cuda::experimental::cuda_executor,
     cppuddle::executor_recycling::round_robin_pool_impl<
-      hpx::cuda::experimental::cuda_executor>>(0, 128, 0, true);
-      // hpx::cuda::experimental::cuda_executor>>(0, 1, 0, true);
+      // hpx::cuda::experimental::cuda_executor>>(0, 128, 0, true);
+      hpx::cuda::experimental::cuda_executor>>(0, 1, 0, true);
 
+  std::cout << "Variant 0 Warmup Naive: \n";
+  experiment_parameters.num_repetitions = 1;
+  experiment_parameters.extra_graph_parameter = 1;
+  experiment_parameters.utilized_implementation_id = 0;
+  // experiment_parameters.utilized_fusion_approach = fusion_mode::none;
+  kernel_fusion_benchmark(experiment_parameters, hA, hB, hC, hC_comparison, N, M, K);
+  std::cout << "Variant 0 Warmup Naive \n" << std::endl;
+
+  experiment_parameters.num_repetitions = 10;
+  experiment_parameters.extra_graph_parameter = 100;
   // ============================================================
   // CPU Comparison variant (datA)
   // ============================================================
@@ -714,71 +763,72 @@ int hpx_main(int argc, char *argv[]) {
   // ============================================================
   std::cout << "Variant 0 Naive: \n";
   experiment_parameters.utilized_implementation_id = 0;
+  // experiment_parameters.utilized_fusion_approach = fusion_mode::none;
   kernel_fusion_benchmark(experiment_parameters, hA, hB, hC, hC_comparison, N, M, K);
   std::cout << "Variant 0 Naive \n" << std::endl;
 
   // // ============================================================
   // // Variant 1 launch configuration
   // // ============================================================
-  std::cout << "Variant Benchmark 1: \n";
-  std::cout << "-> Description: Naive but with optimized access pattern\n";
-  experiment_parameters.utilized_implementation_id = 1;
-  kernel_fusion_benchmark(experiment_parameters, hA, hB, hC, hC_comparison, N, M, K);
-  std::cout << "Variant Benchmark 1 \n" << std::endl;
+  // std::cout << "Variant Benchmark 1: \n";
+  // std::cout << "-> Description: Naive but with optimized access pattern\n";
+  // experiment_parameters.utilized_implementation_id = 1;
+  // kernel_fusion_benchmark(experiment_parameters, hA, hB, hC, hC_comparison, N, M, K);
+  // std::cout << "Variant Benchmark 1 \n" << std::endl;
 
   // // ============================================================
   // // Variant 2 launch configuration
   // // ============================================================
-  std::cout << "Variant Benchmark 2: \n";
-  std::cout << "-> Description: Shared-memory tiled\n";
-  experiment_parameters.utilized_implementation_id = 2;
-  kernel_fusion_benchmark(experiment_parameters, hA, hB, hC, hC_comparison, N, M, K);
-  std::cout << "Variant Benchmark 2 \n" << std::endl;
+  // std::cout << "Variant Benchmark 2: \n";
+  // std::cout << "-> Description: Shared-memory tiled\n";
+  // experiment_parameters.utilized_implementation_id = 2;
+  // kernel_fusion_benchmark(experiment_parameters, hA, hB, hC, hC_comparison, N, M, K);
+  // std::cout << "Variant Benchmark 2 \n" << std::endl;
 
   // // ============================================================
   // // Variant 3 launch configuration
   // // ============================================================
-  std::cout << "Variant Benchmark 3: \n";
-  std::cout << "-> Description: Register tiled\n";
-  experiment_parameters.utilized_implementation_id = 3;
-  kernel_fusion_benchmark(experiment_parameters, hA, hB, hC, hC_comparison, N, M, K);
-  std::cout << "Variant Benchmark end 3 \n" << std::endl;
+  // std::cout << "Variant Benchmark 3: \n";
+  // std::cout << "-> Description: Register tiled\n";
+  // experiment_parameters.utilized_implementation_id = 3;
+  // kernel_fusion_benchmark(experiment_parameters, hA, hB, hC, hC_comparison, N, M, K);
+  // std::cout << "Variant Benchmark end 3 \n" << std::endl;
 
   // // ============================================================
   // // Variant 4 launch configuration
   // // ============================================================
-  std::cout << "Variant Benchmark 4: \n";
-  std::cout << "-> Description: Shared register tiled with better config\n";
-  experiment_parameters.utilized_implementation_id = 4;
-  kernel_fusion_benchmark(experiment_parameters, hA, hB, hC, hC_comparison, N, M, K);
-  std::cout << "Variant Benchmark 4 end \n" << std::endl;
+  // std::cout << "Variant Benchmark 4: \n";
+  // std::cout << "-> Description: Shared register tiled with better config\n";
+  // experiment_parameters.utilized_implementation_id = 4;
+  // kernel_fusion_benchmark(experiment_parameters, hA, hB, hC, hC_comparison, N, M, K);
+  // std::cout << "Variant Benchmark 4 end \n" << std::endl;
 
   // // ============================================================
   // // Variant 5 launch configuration
   // // ============================================================
-  std::cout << "Variant Benchmark 5: \n";
-  std::cout << "-> Description: Vectorized shared register tiled\n";
-  experiment_parameters.utilized_implementation_id = 5;
-  kernel_fusion_benchmark(experiment_parameters, hA, hB, hC, hC_comparison, N, M, K);
-  std::cout << "Variant Benchmark 5 end \n" << std::endl;
+  // std::cout << "Variant Benchmark 5: \n";
+  // std::cout << "-> Description: Vectorized shared register tiled\n";
+  // experiment_parameters.utilized_implementation_id = 5;
+  // kernel_fusion_benchmark(experiment_parameters, hA, hB, hC, hC_comparison, N, M, K);
+  // std::cout << "Variant Benchmark 5 end \n" << std::endl;
 
   // // ============================================================
   // // Variant 6 launch configuration
   // // ============================================================
-  std::cout << "Variant Benchmark 6: \n";
-  std::cout << "-> Description: WMMA\n";
-  experiment_parameters.utilized_implementation_id = 6;
-  kernel_fusion_benchmark(experiment_parameters, hA, hB, hC, hC_comparison, N, M, K);
-  std::cout << "Variant Benchmark 6 end \n" << std::endl;
+  // std::cout << "Variant Benchmark 6: \n";
+  // std::cout << "-> Description: WMMA\n";
+  // experiment_parameters.utilized_implementation_id = 6;
+  // kernel_fusion_benchmark(experiment_parameters, hA, hB, hC, hC_comparison, N, M, K);
+  // std::cout << "Variant Benchmark 6 end \n" << std::endl;
 
   // // ============================================================
   // // Variant 7 launch configuration
   // // ============================================================
-  std::cout << "Variant Benchmark 7: \n";
-  std::cout << "-> Description: Better WMMA\n";
-  experiment_parameters.utilized_implementation_id = 7;
-  kernel_fusion_benchmark(experiment_parameters, hA, hB, hC, hC_comparison, N, M, K);
-  std::cout << "Variant Benchmark 7 end \n" << std::endl;
+  // std::cout << "Variant Benchmark 7: \n";
+  // std::cout << "-> Description: Better WMMA\n";
+  // experiment_parameters.utilized_implementation_id = 7;
+  // kernel_fusion_benchmark(experiment_parameters, hA, hB, hC, hC_comparison, N, M, K);
+  // std::cout << "Variant Benchmark 7 end \n" << std::endl;
 
   // // ============================================================
   // // Variant CUBLAS launch configuration
@@ -796,6 +846,7 @@ int hpx_main(int argc, char *argv[]) {
   }
   std::cout << "-> Description: CUBLAS: \n";
   experiment_parameters.utilized_implementation_id = 8;
+  experiment_parameters.utilized_fusion_approach = fusion_mode::none;
   kernel_fusion_benchmark(experiment_parameters, hA, hB, hC, hC_comparison, N, M, K);
   std::cout << "Variant Benchmark cublas end \n" << std::endl;
   } catch (const std::exception& e) {
@@ -814,6 +865,7 @@ int hpx_main(int argc, char *argv[]) {
 
   hpx::cuda::experimental::detail::unregister_polling(
       hpx::resource::get_thread_pool(0));
+  cppuddle::memory_recycling::finalize();
   return hpx::finalize();
 }
 

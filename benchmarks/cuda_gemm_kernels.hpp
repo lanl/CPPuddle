@@ -22,7 +22,8 @@
 #include <mma.h>
 
 __global__ void dgemm_naive_unoptimized_v0(
-  int M, int N, int K, double alpha, const double* A, const double* B, double beta, double* C) {
+  int M, int N, int K, double alpha, const double* A, const double* B, double beta, double* C_agg) {
+  double *C = C_agg + blockIdx.z * M * N;
   // Deliberately bad mapping:
   // threadIdx.x maps to row instead of column.
   int row = blockIdx.x * blockDim.x + threadIdx.x;
